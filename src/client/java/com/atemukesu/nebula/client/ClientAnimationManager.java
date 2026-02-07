@@ -161,6 +161,31 @@ public class ClientAnimationManager {
                 float relY = (float) (origin.y - cameraPos.y);
                 float relZ = (float) (origin.z - cameraPos.z);
 
+                // Calculate partial ticks for this animation instance
+                // We use Math.ceil because particle states store (Prev, Current).
+                // Frame N contains the transition from N-1 to N.
+                // So if time is 10.5 (between 10 and 11), we need Frame 11 to interpolate.
+                double now = ReplayModUtil.getCurrentAnimationTime();
+                double start = instance.startSeconds;
+                double elapsed = now - start;
+                double currentFrameFloat = elapsed * instance.targetFps;
+
+                // Partial ticks relative to the *currently held* frame
+                // (instance.renderedFrames)
+                // Frame K covers time range (K-1.0) to (K.0).
+                // basis time = K - 1.0
+                float partialTicks = (float) (currentFrameFloat - (instance.renderedFrames - 1));
+
+                // Clamp for safety.
+                // If we are lagging (have Frame 10 but time is 10.5), ticks = 10.5 - 9 = 1.5 ->
+                // clamp to 1.0 (Show Frame 10 fully)
+                // If we are ahead (have Frame 11 but time is 9.5), ticks = 9.5 - 10 = -0.5 ->
+                // clamp to 0.0 (Show Frame 11 start / Frame 10 end)
+                if (partialTicks < 0)
+                    partialTicks = 0;
+                if (partialTicks > 1)
+                    partialTicks = 1;
+
                 // 使用智能渲染
                 GpuParticleRenderer.render(
                         readBuffer, // 传入切片副本
@@ -171,7 +196,8 @@ public class ClientAnimationManager {
                         cameraUp,
                         relX,
                         relY,
-                        relZ);
+                        relZ,
+                        partialTicks); // Pass partial ticks here
             }
         }
 
@@ -299,11 +325,6 @@ public class ClientAnimationManager {
             }
         }
 
-        // Seek 冷却控制
-        private long lastSeekTime = 0;
-        private static final long SEEK_COOLDOWN_MS = 500;
-        private int lastSeekTarget = -1;
-
         public ByteBuffer getNextFrame() {
             if (!isStarted)
                 return null;
@@ -314,61 +335,52 @@ public class ClientAnimationManager {
 
             int totalFrames = streamer.getTotalFrames();
 
-            // 检查时间范围 (仅针对 Replay Mod 模式)
+            // Replay Mod Logic Simplified
             if (replayTime != null) {
                 double duration = (double) totalFrames / targetFps;
 
-                if (elapsed < 0 || elapsed > duration + 0.2) {
+                // 1. Before Start: Stop/Hide
+                if (elapsed < 0) {
                     if (lastFrameData != null) {
-                        Nebula.LOGGER.debug("Time out of range (elapsed={}s, duration={}s). Clearing animation.",
-                                String.format("%.2f", elapsed), String.format("%.2f", duration));
                         NblStreamer.releaseBuffer(lastFrameData);
                         lastFrameData = null;
-                        // 重置 renderedFrames 为 -1，确保下次进入范围时必定触发 Seek (因 expectedFrame >= 0 > -1)
-                        renderedFrames = -1;
+                        renderedFrames = 0; // Reset
                     }
-                    return null; // 隐藏动画
+                    return null;
+                }
+
+                // 2. After End: Stop/Hide
+                if (elapsed > duration) {
+                    if (lastFrameData != null) {
+                        NblStreamer.releaseBuffer(lastFrameData);
+                        lastFrameData = null;
+                    }
+                    return null;
                 }
             }
 
-            // Replay Mod 拖动时间轴支持
-            int expectedFrame = (int) (elapsed * targetFps);
+            // Standard Playback Logic
+            int expectedFrame = (int) Math.ceil(elapsed * targetFps);
             if (expectedFrame < 0)
                 expectedFrame = 0;
             if (expectedFrame >= totalFrames)
-                expectedFrame = totalFrames; // Allow "waiting for EOF"
+                expectedFrame = totalFrames;
 
-            // 检测是否需要 Seek
-            int seekThreshold = ReplayModUtil.isRendering() ? 10 : 30;
-            boolean needSeek = expectedFrame < renderedFrames || expectedFrame > renderedFrames + seekThreshold;
-
-            if (needSeek) {
-                long currentTime = System.currentTimeMillis();
-
-                boolean isRewind = expectedFrame < renderedFrames;
-                boolean cooledDown = (currentTime - lastSeekTime) > SEEK_COOLDOWN_MS;
-                boolean sameTarget = (expectedFrame == lastSeekTarget);
-
-                if (isRewind || (cooledDown && !sameTarget)) {
-                    streamer.seek(expectedFrame);
-                    lastSeekTime = currentTime;
-                    lastSeekTarget = expectedFrame;
-                    renderedFrames = expectedFrame; // 乐观更新
-
-                    Nebula.LOGGER.debug("Seek to frame {} (rewind: {})", expectedFrame, isRewind);
-                }
-
-                // Seek 时继续显示当前帧(不要归还)，直到新帧到来
-                return lastFrameData;
+            // Simple Seek for jumps (forward or backward large jumps)
+            if (Math.abs(renderedFrames - expectedFrame) > 30) {
+                // Hard seek only on big jumps
+                streamer.seek(expectedFrame);
+                renderedFrames = expectedFrame;
+                return lastFrameData; // Wait for seek
             }
 
-            if (isFinished && lastFrameData == null) // 如果结束了且没有最后一帧
+            if (isFinished && lastFrameData == null)
                 return null;
 
             ByteBuffer newData = null;
 
             if (ReplayModUtil.isRendering()) {
-                // 渲染模式：严格等待
+                // Rendering mode: Block wait
                 if (renderedFrames < expectedFrame) {
                     try {
                         newData = streamer.getQueue().take();
@@ -378,25 +390,26 @@ public class ClientAnimationManager {
                     }
                 }
             } else {
-                // 普通模式：尝试获取
+                // Standard mode: Non-blocking poll
                 int framesToCatchUp = expectedFrame - renderedFrames;
+                if (expectedFrame >= totalFrames && !isFinished) {
+                    framesToCatchUp = Math.max(framesToCatchUp, 1);
+                }
                 int maxCatchUp = Math.min(framesToCatchUp, 5);
 
                 for (int i = 0; i < maxCatchUp; i++) {
                     try {
-                        ByteBuffer temp = streamer.getQueue().poll(2, java.util.concurrent.TimeUnit.MILLISECONDS);
+                        ByteBuffer temp = streamer.getQueue().poll();
                         if (temp != null) {
-                            // 如果有多帧积压，我们只取最新的，中间的直接归还(跳帧)
-                            // 注意：这里的"最新的"是指在本次循环中最后取到的那个
                             if (newData != null) {
-                                NblStreamer.releaseBuffer(newData); // 丢弃中间帧
+                                NblStreamer.releaseBuffer(newData);
+                                renderedFrames++;
                             }
-                            newData = temp; // 更新为最新
+                            newData = temp;
                         } else {
                             break;
                         }
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
+                    } catch (Exception e) {
                         break;
                     }
                 }
@@ -411,8 +424,7 @@ public class ClientAnimationManager {
                         NblStreamer.releaseBuffer(lastFrameData);
                         lastFrameData = null;
                     }
-                    // EOF buffer 也要归还
-                    NblStreamer.releaseBuffer(newData);
+                    NblStreamer.releaseBuffer(newData); // EOF buffer
                     return null;
                 }
 
@@ -424,7 +436,6 @@ public class ClientAnimationManager {
                 lastFrameData = newData;
                 renderedFrames++;
             }
-            // 如果 newData 为空，说明还不需要更新或没读到，继续返回 lastFrameData
 
             return lastFrameData;
         }

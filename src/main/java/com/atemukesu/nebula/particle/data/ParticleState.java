@@ -12,12 +12,25 @@ public class ParticleState {
     public int texID;
     public int seqID;
 
+    // [Feature] GPU Interpolation
+    // 每次更新前，先将 x/y/z 存入 prev
+    public float prevX, prevY, prevZ;
+
+    // Lifecycle tracking
+    public int lastSeenFrame = -1;
+    public int id; // Needed for stateMap iteration in processIFrame
+
     public ParticleState() {
         // NBL 文档 "Zero Basis Principle": 新粒子的所有属性默认为 0
         this.x = 0;
         this.y = 0;
         this.z = 0;
-        this.r = 0; // 修正：从 255 改为 0
+        // 初始化 prev = current
+        this.prevX = 0;
+        this.prevY = 0;
+        this.prevZ = 0;
+
+        this.r = 0;
         this.g = 0;
         this.b = 0;
         this.a = 0;
@@ -26,11 +39,30 @@ public class ParticleState {
         this.seqID = 0;
     }
 
+    public void read(java.nio.ByteBuffer data) {
+        // Not used by NblStreamer anymore as it does manual reads?
+        // Wait, NblStreamer rewrite used manual reads, but maybe we should keep helper
+        // methods if needed.
+        // But NblStreamer uses SoA layout now, so it reads fields manually.
+        // Actually, let's keep it simple. NblStreamer modifies fields directly.
+    }
+
+    public void readPFrame(java.nio.ByteBuffer data) {
+        // Not used.
+    }
+
     public ParticleState copy() {
         ParticleState copy = new ParticleState();
         copy.x = this.x;
         copy.y = this.y;
         copy.z = this.z;
+        // Copy prev
+        copy.prevX = this.prevX;
+        copy.prevY = this.prevY;
+        copy.prevZ = this.prevZ;
+        copy.lastSeenFrame = this.lastSeenFrame;
+        copy.id = this.id;
+
         copy.r = this.r;
         copy.g = this.g;
         copy.b = this.b;

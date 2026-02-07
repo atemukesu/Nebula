@@ -27,13 +27,20 @@ public class DebugHud {
 
             // High Performance Mode is now always ON
             String highPerfStatus = I18n.translate("gui.nebula.config.on");
-            double bufferMB = com.atemukesu.nebula.client.render.GpuParticleRenderer.getBufferSize() / 1024.0 / 1024.0;
+            double totalMB = com.atemukesu.nebula.client.render.GpuParticleRenderer.getBufferSize() / 1024.0 / 1024.0;
+            double usedMB = com.atemukesu.nebula.client.render.GpuParticleRenderer.getTypeSize() / 1024.0 / 1024.0;
+            double ramMB = com.atemukesu.nebula.client.loader.NblStreamer.getTotalAllocatedMemory() / 1024.0 / 1024.0;
+
+            // Display both GPU VRAM and RAM usage to clarify "Buffer Size"
+            // (Orphaned) tag indicates the optimization is active
+            String bufferInfo = String.format("GPU: %.2f/%.2fMB | RAM: %.2fMB", usedMB, totalMB, ramMB);
+
             String info = I18n.translate("hud.nebula.debug.info",
                     modVersion,
                     instanceCount,
                     particleCount,
                     highPerfStatus,
-                    bufferMB);
+                    bufferInfo);
 
             drawContext.drawTextWithShadow(textRenderer, info, 5, 5, 0xFFFFFF);
         });

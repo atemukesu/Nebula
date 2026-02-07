@@ -5,11 +5,12 @@ in vec3 Position;
 in vec2 UV;
 
 // 实例化数据 (Per-Instance)
-in vec3 iPos;      // 粒子位置
-in vec4 iColor;    // 粒子颜色 (归一化)
-in float iSize;    // 粒子大小
-in float iTexID;   // 纹理 ID
-in float iSeqID;   // 序列帧 ID
+in vec3 iPrevPos;      // NEW: 上一帧位置
+in vec3 iPos;          // 粒子位置
+in vec4 iColor;        // 粒子颜色 (归一化)
+in float iSize;        // 粒子大小
+in float iTexID;       // 纹理 ID
+in float iSeqID;       // 序列帧 ID
 
 // Uniforms
 uniform mat4 ModelViewMat;
@@ -17,6 +18,7 @@ uniform mat4 ProjMat;
 uniform vec3 CameraRight;
 uniform vec3 CameraUp;
 uniform vec3 Origin;
+uniform float PartialTicks; // NEW
 
 // 输出到片元着色器
 out vec4 vColor;
@@ -29,8 +31,12 @@ void main() {
     // 纹理层 = texID + seqID (已在 CPU 端预计算)
     vTexLayer = iTexID + iSeqID;
     
+    // Interpolate per-particle position
+    // Lerp(prev, curr, t)
+    vec3 interpolatedPos = mix(iPrevPos, iPos, PartialTicks);
+
     // World position of the particle center
-    vec3 center = Origin + iPos;
+    vec3 center = Origin + interpolatedPos;
     
     // Billboard offset based on camera vectors and particle size
     vec3 offset = (CameraRight * (Position.x - 0.5) + CameraUp * (Position.y - 0.5)) * iSize;

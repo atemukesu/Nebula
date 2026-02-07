@@ -49,12 +49,15 @@ public class GpuParticleRenderer {
     private static int uOrigin = -1;
     private static int uSampler0 = -1;
     private static int uUseTexture = -1;
+    private static int uPartialTicks = -1;
 
     // 动态扩容阈值
     private static int currentBufferSize = 0;
+    private static int lastFrameUsedBytes = 0;
 
-    // 单个粒子的字节大小: Pos(12) + Color(4) + Size(4) + TexID(4) + SeqID(4) = 28
-    public static final int BYTES_PER_PARTICLE = 28;
+    // 单个粒子的字节大小: PrevPos(12) + Pos(12) + Color(4) + Size(4) + TexID(4) + SeqID(4) =
+    // 40
+    public static final int BYTES_PER_PARTICLE = 40;
 
     // 临时矩阵缓冲
     private static final FloatBuffer matrixBuffer = BufferUtils.createFloatBuffer(16);
@@ -85,6 +88,7 @@ public class GpuParticleRenderer {
                 uOrigin = GL20.glGetUniformLocation(shaderProgram, "Origin");
                 uSampler0 = GL20.glGetUniformLocation(shaderProgram, "Sampler0");
                 uUseTexture = GL20.glGetUniformLocation(shaderProgram, "UseTexture");
+                uPartialTicks = GL20.glGetUniformLocation(shaderProgram, "PartialTicks");
             }
 
             // 3. 创建 VAO
@@ -121,30 +125,35 @@ public class GpuParticleRenderer {
             // Instance 属性
             int strideInst = BYTES_PER_PARTICLE;
 
-            // iPos (vec3) - offset 0
+            // 0. PrevPos (vec3) - NEW offset 0
             GL20.glEnableVertexAttribArray(2);
             GL20.glVertexAttribPointer(2, 3, GL11.GL_FLOAT, false, strideInst, 0);
             GL33.glVertexAttribDivisor(2, 1);
 
-            // iColor (vec4, normalized) - offset 12
+            // 1. CurrentPos (vec3) - MOVED offset 12
             GL20.glEnableVertexAttribArray(3);
-            GL20.glVertexAttribPointer(3, 4, GL11.GL_UNSIGNED_BYTE, true, strideInst, 12);
+            GL20.glVertexAttribPointer(3, 3, GL11.GL_FLOAT, false, strideInst, 12);
             GL33.glVertexAttribDivisor(3, 1);
 
-            // iSize (float) - offset 16
+            // 2. Color (vec4, normalized) - MOVED offset 24
             GL20.glEnableVertexAttribArray(4);
-            GL20.glVertexAttribPointer(4, 1, GL11.GL_FLOAT, false, strideInst, 16);
+            GL20.glVertexAttribPointer(4, 4, GL11.GL_UNSIGNED_BYTE, true, strideInst, 24);
             GL33.glVertexAttribDivisor(4, 1);
 
-            // iTexID (float) - offset 20
+            // 3. Size (float) - MOVED offset 28
             GL20.glEnableVertexAttribArray(5);
-            GL20.glVertexAttribPointer(5, 1, GL11.GL_FLOAT, false, strideInst, 20);
+            GL20.glVertexAttribPointer(5, 1, GL11.GL_FLOAT, false, strideInst, 28);
             GL33.glVertexAttribDivisor(5, 1);
 
-            // iSeqID (float) - offset 24
+            // 4. TexID (float) - MOVED offset 32
             GL20.glEnableVertexAttribArray(6);
-            GL20.glVertexAttribPointer(6, 1, GL11.GL_FLOAT, false, strideInst, 24);
+            GL20.glVertexAttribPointer(6, 1, GL11.GL_FLOAT, false, strideInst, 32);
             GL33.glVertexAttribDivisor(6, 1);
+
+            // 5. SeqID (float) - MOVED offset 36
+            GL20.glEnableVertexAttribArray(7);
+            GL20.glVertexAttribPointer(7, 1, GL11.GL_FLOAT, false, strideInst, 36);
+            GL33.glVertexAttribDivisor(7, 1);
 
             GL30.glBindVertexArray(0);
             initialized = true;
@@ -227,11 +236,12 @@ public class GpuParticleRenderer {
             // 绑定属性位置
             GL20.glBindAttribLocation(program, 0, "Position");
             GL20.glBindAttribLocation(program, 1, "UV");
-            GL20.glBindAttribLocation(program, 2, "iPos");
-            GL20.glBindAttribLocation(program, 3, "iColor");
-            GL20.glBindAttribLocation(program, 4, "iSize");
-            GL20.glBindAttribLocation(program, 5, "iTexID");
-            GL20.glBindAttribLocation(program, 6, "iSeqID");
+            GL20.glBindAttribLocation(program, 2, "iPrevPos");
+            GL20.glBindAttribLocation(program, 3, "iPos");
+            GL20.glBindAttribLocation(program, 4, "iColor");
+            GL20.glBindAttribLocation(program, 5, "iSize");
+            GL20.glBindAttribLocation(program, 6, "iTexID");
+            GL20.glBindAttribLocation(program, 7, "iSeqID");
 
             GL20.glLinkProgram(program);
 
@@ -260,7 +270,7 @@ public class GpuParticleRenderer {
             Matrix4f modelViewMatrix, Matrix4f projMatrix,
             float[] cameraRight, float[] cameraUp,
             float originX, float originY, float originZ,
-            boolean useTexture) {
+            boolean useTexture, float partialTicks) {
 
         if (particleCount <= 0 || data == null || !initialized || !shaderCompiled) {
             return;
@@ -268,17 +278,25 @@ public class GpuParticleRenderer {
 
         RenderSystem.assertOnRenderThread();
 
-        // 1. 保存当前绑定的 Framebuffer (防御性编程，虽然我们在外层bind了)
-        int previousFbo = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
+        // ==========================================
+        // 1. 关键修正：强制绑定主帧缓冲区
+        // ==========================================
+        // 在 WorldRenderEvents.LAST 阶段，Iris 可能已经解绑了缓冲区。
+        // 我们必须显式告诉 OpenGL："把东西画在屏幕上(Main Framebuffer)"。
+        // false = 不要清除颜色/深度，保留场景原有的内容。
+        MinecraftClient.getInstance().getFramebuffer().beginWrite(false);
+
+        // 备份 Viewport (视口)，防止因为某些模组修改了视口导致错位
+        int[] viewport = new int[4];
+        GL11.glGetIntegerv(GL11.GL_VIEWPORT, viewport);
 
         // 设置渲染状态
         RenderSystem.disableCull();
         RenderSystem.enableBlend();
-        // 恢复为标准 Alpha 混合 (Standard Alpha Blending)
         RenderSystem.blendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
         RenderSystem.enableDepthTest();
         RenderSystem.depthFunc(GL11.GL_LEQUAL);
-        RenderSystem.depthMask(false); // 禁用深度写入
+        RenderSystem.depthMask(false); // 禁用深度写入 (粒子通常半透明)
 
         // 使用自定义着色器
         GL20.glUseProgram(shaderProgram);
@@ -289,6 +307,9 @@ public class GpuParticleRenderer {
         GL20.glUniform3f(uCameraRight, cameraRight[0], cameraRight[1], cameraRight[2]);
         GL20.glUniform3f(uCameraUp, cameraUp[0], cameraUp[1], cameraUp[2]);
         GL20.glUniform3f(uOrigin, originX, originY, originZ);
+        if (uPartialTicks != -1) {
+            GL20.glUniform1f(uPartialTicks, partialTicks);
+        }
 
         // 绑定纹理
         if (useTexture && ParticleTextureManager.isInitialized()) {
@@ -302,12 +323,16 @@ public class GpuParticleRenderer {
         // 上传 Instance 数据
         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, instanceVbo);
 
-        // 扩容检查
         int needed = data.remaining();
-        if (needed > currentBufferSize) {
+        lastFrameUsedBytes = needed;
+
+        // 缓冲区扩容/更新策略
+        if (needed <= currentBufferSize) {
+            // Orphaning: 显式废弃旧缓冲区，避免 GPU 等待
+            GL15.glBufferData(GL15.GL_ARRAY_BUFFER, currentBufferSize, GL15.GL_STREAM_DRAW);
+        } else {
             int newSize = Math.max(currentBufferSize * 2, needed);
-            Nebula.LOGGER.info("Expanded instance buffer from {} to {} bytes (needed: {})", currentBufferSize, newSize,
-                    needed);
+            Nebula.LOGGER.info("Expanded instance buffer from {} to {} bytes", currentBufferSize, newSize);
             currentBufferSize = newSize;
             GL15.glBufferData(GL15.GL_ARRAY_BUFFER, currentBufferSize, GL15.GL_STREAM_DRAW);
         }
@@ -315,32 +340,45 @@ public class GpuParticleRenderer {
         // 上传数据
         GL15.glBufferSubData(GL15.GL_ARRAY_BUFFER, 0, data);
 
-        // 绘制 - 单个 Draw Call
+        // 绘制
         GL30.glBindVertexArray(vao);
         GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
         GL30.glBindVertexArray(0);
 
-        // 恢复状态
+        // ==========================================
+        // 2. 关键修正：终极状态恢复 (解决黑手/UI消失)
+        // ==========================================
+
+        // 解绑自定义纹理
         ParticleTextureManager.unbind();
-
-        RenderSystem.setShaderTexture(0, 0);
-        // 恢复混合模式到默认 (非常重要，否则 GUI 可能变白或变透明)
-        RenderSystem.defaultBlendFunc();
-        RenderSystem.depthMask(true);
-        RenderSystem.disableBlend();
-        RenderSystem.enableCull();
-        RenderSystem.depthFunc(GL11.GL_LESS); // 恢复默认深度判断 (GL_LESS 是 MC 的默认值)
-
-        MinecraftClient client = MinecraftClient.getInstance();
         RenderSystem.activeTexture(GL13.GL_TEXTURE0);
-        client.getTextureManager().bindTexture(SpriteAtlasTexture.BLOCK_ATLAS_TEXTURE);
-        // 修复问题: 手持物品变成纯色
+
+        // [修复手部/物品全黑]
+        // 原版渲染器(ItemRenderer/HandRenderer)假设 Texture Unit 0 永远绑定的是 BLOCK_ATLAS。
+        // 如果这里不恢复，随后的手部渲染就会采样到错误的纹理（或者空纹理），导致变黑。
         RenderSystem.setShaderTexture(0, SpriteAtlasTexture.BLOCK_ATLAS_TEXTURE);
-        GL20.glUseProgram(0);
-        // 恢复之前的 Framebuffer (如果不做这步，有些后续特效可能会画错地方)
-        if (previousFbo != 0) {
-            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, previousFbo);
-        }
+
+        // 恢复 OpenGL 基础状态
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.depthMask(true); // 恢复深度写入
+        RenderSystem.disableBlend();
+
+        // 恢复深度测试标准
+        RenderSystem.depthFunc(GL11.GL_LEQUAL);
+        RenderSystem.enableDepthTest();
+        RenderSystem.enableCull();
+
+        // [修复 UI/Hotbar 消失]
+        // 必须清除 RenderSystem 内部的 Shader 缓存。
+        // 否则下一个渲染阶段(GUI)会误以为 Shader 没变，而不去绑定它需要的 Position/Color Shader。
+        RenderSystem.setShader(() -> null);
+
+        // [防御性恢复]
+        // 再次确保绑定回 Main Framebuffer，虽然通常 GUI 也是画在这里，但显式绑定更安全。
+        MinecraftClient.getInstance().getFramebuffer().beginWrite(false);
+
+        // 恢复视口
+        GL11.glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
     }
 
     /**
@@ -361,11 +399,12 @@ public class GpuParticleRenderer {
     public static void render(ByteBuffer data, int particleCount,
             Matrix4f modelViewMatrix, Matrix4f projMatrix,
             float[] cameraRight, float[] cameraUp,
-            float originX, float originY, float originZ) {
+            float originX, float originY, float originZ,
+            float partialTicks) {
 
         if (shaderCompiled) {
             renderInstanced(data, particleCount, modelViewMatrix, projMatrix,
-                    cameraRight, cameraUp, originX, originY, originZ, true);
+                    cameraRight, cameraUp, originX, originY, originZ, true, partialTicks);
         }
     }
 
@@ -396,6 +435,10 @@ public class GpuParticleRenderer {
 
     public static int getBufferSize() {
         return currentBufferSize;
+    }
+
+    public static int getTypeSize() {
+        return lastFrameUsedBytes;
     }
 
     /**

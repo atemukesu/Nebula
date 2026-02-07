@@ -12,5 +12,5 @@
     "gui.nebula.config.high_performance": "高性能粒子渲染：%s",
     "command.nebula.client.reload.success": "动画重载成功！",
     "command.nebula.client.reload.failed": "动画重载失败。详情请查看日志。",
-    "hud.nebula.debug.info": "Nebula %s | 实例: %d | 粒子: %d | 高性能模式: %s | 显存占用: %.2fMB"
+    "hud.nebula.debug.info": "Nebula %s | 实例: %d | 粒子: %d | 高性能模式: %s | 缓冲区: %s"
 }

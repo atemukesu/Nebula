@@ -1,0 +1,16 @@
+{
+    "command.nebula.reload.success": "Server-side animations reloaded successfully.",
+    "command.nebula.clear.success": "All particle animations have been cleared.",
+    "command.nebula.play.not_found": "Animation '%s' not found on the server.",
+    "command.nebula.play.success": "Playing animation '%s' for all players.",
+    "gui.nebula.config.title": "Movable Particles Configuration",
+    "gui.nebula.config.render_in_game": "Render Particles In-Game: %s",
+    "gui.nebula.config.show_debug_hud": "Show Debug HUD: %s",
+    "gui.nebula.config.on": "ON",
+    "gui.nebula.config.off": "OFF",
+    "gui.nebula.config.done": "Done",
+    "gui.nebula.config.high_performance": "High Performance Rendering: %s",
+    "command.nebula.client.reload.success": "Animations reloaded successfully!",
+    "command.nebula.client.reload.failed": "Failed to reload animations. See log for details.",
+    "hud.nebula.debug.info": "Nebula %s | Instances: %d | Particles: %d | High Perf: %s | Buffer: %.2fMB"
+}

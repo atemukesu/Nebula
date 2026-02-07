@@ -1,0 +1,13 @@
+{
+	"required": true,
+	"package": "com.atemukesu.nebula.mixin",
+	"compatibilityLevel": "JAVA_17",
+	"client": [
+		"client.ExampleClientMixin",
+		"client.VideoRendererMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	},
+	"plugin": "com.atemukesu.nebula.mixin.client.NebulaMixinPlugin"
+}

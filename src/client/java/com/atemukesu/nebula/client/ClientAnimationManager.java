@@ -335,28 +335,26 @@ public class ClientAnimationManager {
 
             int totalFrames = streamer.getTotalFrames();
 
-            // Replay Mod Logic Simplified
-            if (replayTime != null) {
-                double duration = (double) totalFrames / targetFps;
+            // 计算动画总时长
+            double duration = (double) totalFrames / targetFps;
 
-                // 1. Before Start: Stop/Hide
-                if (elapsed < 0) {
-                    if (lastFrameData != null) {
-                        NblStreamer.releaseBuffer(lastFrameData);
-                        lastFrameData = null;
-                        renderedFrames = 0; // Reset
-                    }
-                    return null;
-                }
+            // [修复] 统一的时间范围检查（适用于所有模式）
+            // 原本只有 ReplayMod 环境会检查，导致普通游戏模式下动画超时后仍持续渲染
 
-                // 2. After End: Stop/Hide
-                if (elapsed > duration) {
-                    if (lastFrameData != null) {
-                        NblStreamer.releaseBuffer(lastFrameData);
-                        lastFrameData = null;
-                    }
-                    return null;
-                }
+            // [倒带检测] ReplayMod 倒带时会从头重新发包，然后快进到目标位置
+            // （replay 时间只会单调递增，不会跳变）
+            // elapsed < 0 说明当前 replay 时间已倒退到此动画的创建时间之前
+            // 直接销毁此实例，ReplayMod 快进时会重新发包创建新的实例
+            if (replayTime != null && elapsed < 0) {
+                stop();
+                return null;
+            }
+
+            // [超时检测] 通用：动画已播放完毕，应当停止并销毁
+            // 添加 0.5 秒缓冲时间，确保最后一帧有足够时间被渲染
+            if (elapsed > duration + 0.5) {
+                stop();
+                return null;
             }
 
             // Standard Playback Logic

@@ -1,16 +1,28 @@
-#version 150
+#version 430 core
 
-// Quad 顶点属性
-in vec3 Position;
-in vec2 UV;
+// 标准 Quad 属性 (Per-Vertex)
+layout(location = 0) in vec3 Position;
+layout(location = 1) in vec2 UV;
 
-// 实例化数据 (Per-Instance)
-in vec3 iPrevPos;      // NEW: 上一帧位置
-in vec3 iPos;          // 粒子位置
-in vec4 iColor;        // 粒子颜色 (归一化)
-in float iSize;        // 粒子大小
-in float iTexID;       // 纹理 ID
-in float iSeqID;       // 序列帧 ID
+// 粒子数据结构 (std430 对齐: 16字节步长)
+struct Particle {
+    // block 0 (offset 0)
+    float prevX, prevY, prevZ;
+    float size;
+    
+    // block 1 (offset 16)
+    float curX, curY, curZ;
+    uint colorPacked; // RGBA8 打包
+    
+    // block 2 (offset 32)
+    float texLayer;   // texID + seqID 预计算
+    float pad1, pad2, pad3;
+};
+
+// SSBO 绑定 (对应 Java SSBO_BINDING_INDEX = 0)
+layout(std430, binding = 0) buffer ParticleBuffer {
+    Particle particles[];
+};
 
 // Uniforms
 uniform mat4 ModelViewMat;
@@ -18,31 +30,35 @@ uniform mat4 ProjMat;
 uniform vec3 CameraRight;
 uniform vec3 CameraUp;
 uniform vec3 Origin;
-uniform float PartialTicks; // NEW
+uniform float PartialTicks;
 
-// 输出到片元着色器
+// Outputs
 out vec4 vColor;
 out vec2 vUV;
 flat out float vTexLayer;
 
 void main() {
-    vColor = iColor;
-    vUV = UV;
-    // 纹理层 = texID + seqID (已在 CPU 端预计算)
-    vTexLayer = iTexID + iSeqID;
+    // 通过 InstanceID 获取粒子数据
+    Particle p = particles[gl_InstanceID];
     
-    // Interpolate per-particle position
-    // Lerp(prev, curr, t)
-    vec3 interpolatedPos = mix(iPrevPos, iPos, PartialTicks);
-
-    // World position of the particle center
+    // 1. 位置插值 (Linear Interpolation)
+    vec3 prevPos = vec3(p.prevX, p.prevY, p.prevZ);
+    vec3 currPos = vec3(p.curX, p.curY, p.curZ);
+    vec3 interpolatedPos = mix(prevPos, currPos, PartialTicks);
+    
+    // 2. 颜色解包 (uint ABGR -> vec4 RGBA normalized)
+    // unpackUnorm4x8 将 32位uint 拆解为 4个 0.0-1.0 的 float
+    vColor = unpackUnorm4x8(p.colorPacked);
+    
+    // 3. 计算 Billboarding
     vec3 center = Origin + interpolatedPos;
-    
-    // Billboard offset based on camera vectors and particle size
-    vec3 offset = (CameraRight * (Position.x - 0.5) + CameraUp * (Position.y - 0.5)) * iSize;
-    
-    // Final vertex position in world space
+    vec3 offset = (CameraRight * (Position.x - 0.5) + 
+                   CameraUp * (Position.y - 0.5)) * p.size;
+                   
     vec3 finalPos = center + offset;
     
     gl_Position = ProjMat * ModelViewMat * vec4(finalPos, 1.0);
+    
+    vUV = UV;
+    vTexLayer = p.texLayer;
 }

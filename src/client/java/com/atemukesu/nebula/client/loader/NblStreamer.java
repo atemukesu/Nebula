@@ -22,12 +22,11 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * NBL 流式加载器 (v4 最终优化版)
- * 特性：
- * 1. 支持 RandomAccessFile 快速 Seek
- * 2. 支持 Zero-Allocation 内存复用（解决 GC 卡顿）
- * 3. 支持 Fast-Forward 快进模式
- * 4. 支持 Rent-Return Buffer Pool（解决多动画闪烁问题）
+ * NBL 流式加载器 (SSBO 优化版)
+ * <p>
+ * 负责从磁盘读取压缩的 NBL 文件，在 CPU 端进行 Zstd 解压和状态计算，
+ * 并将数据打包成 GPU SSBO 友好的格式 (std430 布局)。
+ * </p>
  */
 public class NblStreamer implements Runnable {
 
@@ -43,7 +42,7 @@ public class NblStreamer implements Runnable {
     private float[] bboxMin = new float[3];
     private float[] bboxMax = new float[3];
 
-    // [Optimization] Use simpler HashMap as runImpl is single-threaded
+    // 使用 HashMap 存储粒子状态 (因为是单线程运行，无需 Concurrent)
     private final Map<Integer, ParticleState> stateMap = new java.util.HashMap<>();
 
     private final BlockingQueue<ByteBuffer> gpuBufferQueue;
@@ -56,16 +55,10 @@ public class NblStreamer implements Runnable {
 
     // GPU Buffer Pool (智能对象池)
     private static final int INITIAL_BUFFER_SIZE = 1 * 1024 * 1024; // 1MB
-    private static final int MAX_TOTAL_MEMORY = 1024 * 1024 * 1024; // 1GB 总上限
     private static final java.util.concurrent.ConcurrentLinkedQueue<ByteBuffer> freeBuffers = new java.util.concurrent.ConcurrentLinkedQueue<>();
     private static final java.util.concurrent.atomic.AtomicLong totalAllocatedMemory = new java.util.concurrent.atomic.AtomicLong(
             0);
 
-    public static long getTotalAllocatedMemory() {
-        return totalAllocatedMemory.get();
-    }
-
-    // Seek 控制
     private volatile int seekTargetFrame = -1;
     private static final int QUEUE_CAPACITY = 10;
 
@@ -116,15 +109,6 @@ public class NblStreamer implements Runnable {
                 frameSizes[i] = indexBuf.getInt();
             }
             this.header = new NblHeader(targetFps, totalFrames, textureEntries);
-
-            Nebula.LOGGER.info("Parsed NBL Header: FPS={}, Frames={}, Textures={}", targetFps, totalFrames,
-                    textureCount);
-            Nebula.LOGGER.info("  BBox Min: ({}, {}, {})", bboxMin[0], bboxMin[1], bboxMin[2]);
-            Nebula.LOGGER.info("  BBox Max: ({}, {}, {})", bboxMax[0], bboxMax[1], bboxMax[2]);
-            if (!textureEntries.isEmpty()) {
-                Nebula.LOGGER.info("  Textures: {}",
-                        textureEntries.stream().map(e -> e.path).reduce((a, b) -> a + ", " + b).orElse(""));
-            }
         }
     }
 
@@ -155,8 +139,7 @@ public class NblStreamer implements Runnable {
             int fastForwardTo = -1;
 
             while (isRunning.get() && currentFrameIdx < totalFrames) {
-
-                // 1. 检查 Seek
+                // Seek 处理
                 int request = seekTargetFrame;
                 if (request != -1) {
                     seekTargetFrame = -1;
@@ -164,45 +147,27 @@ public class NblStreamer implements Runnable {
                     if (request < currentFrameIdx) {
                         currentFrameIdx = 0;
                         stateMap.clear();
-                        gpuBufferQueue.forEach(NblStreamer::releaseBuffer); // 释放队列中的 buffer
+                        gpuBufferQueue.forEach(NblStreamer::releaseBuffer);
                         gpuBufferQueue.clear();
-                        Nebula.LOGGER.debug("Seek rewind to 0, fast-forwarding to {}", request);
                     }
                 }
 
-                // 2. 读取与解压
                 long offset = frameOffsets[currentFrameIdx];
                 int compressedSize = frameSizes[currentFrameIdx];
 
-                if (cachedCompressedBuffer == null || cachedCompressedBuffer.capacity() < compressedSize) {
-                    if (cachedCompressedBuffer != null) {
-                        totalAllocatedMemory.addAndGet(-cachedCompressedBuffer.capacity());
-                    }
-                    int allocSize = (int) (compressedSize * 1.5);
-                    cachedCompressedBuffer = ByteBuffer.allocateDirect(allocSize);
-                    totalAllocatedMemory.addAndGet(allocSize);
-                }
+                // 缓冲管理与解压 (Zstd)
+                ensureCompressedBuffer(compressedSize);
                 cachedCompressedBuffer.clear();
                 cachedCompressedBuffer.limit(compressedSize);
                 channel.read(cachedCompressedBuffer, offset);
                 cachedCompressedBuffer.flip();
 
                 long decompressedSize = Zstd.decompressedSize(cachedCompressedBuffer);
-                if (cachedDecompressedBuffer == null || cachedDecompressedBuffer.capacity() < decompressedSize) {
-                    if (cachedDecompressedBuffer != null) {
-                        totalAllocatedMemory.addAndGet(-cachedDecompressedBuffer.capacity());
-                    }
-                    int newSize = (int) (decompressedSize > 0 ? decompressedSize * 1.5 : compressedSize * 15);
-                    cachedDecompressedBuffer = ByteBuffer.allocateDirect(newSize).order(ByteOrder.LITTLE_ENDIAN);
-                    totalAllocatedMemory.addAndGet(newSize);
-                }
+                ensureDecompressedBuffer((int) decompressedSize, compressedSize);
+
                 cachedDecompressedBuffer.clear();
                 try {
                     long decompressedBytes = Zstd.decompress(cachedDecompressedBuffer, cachedCompressedBuffer);
-                    if (decompressedBytes != decompressedSize) {
-                        Nebula.LOGGER.warn("Zstd decompressed size mismatch! Expected {}, got {}", decompressedSize,
-                                decompressedBytes);
-                    }
                     cachedDecompressedBuffer.position((int) decompressedBytes);
                     cachedDecompressedBuffer.flip();
                 } catch (Exception e) {
@@ -211,16 +176,12 @@ public class NblStreamer implements Runnable {
                     continue;
                 }
 
-                // 3. 处理数据
+                // 处理帧数据
                 boolean isSkipping = currentFrameIdx < fastForwardTo;
-                // Use acquireBuffer, if isSkipping=true then skip output=true
                 ByteBuffer gpuBuffer = processFrameData(cachedDecompressedBuffer, isSkipping, currentFrameIdx);
 
-                // 4. 输出
                 if (!isSkipping && gpuBuffer != null) {
                     try {
-                        // [Fix] Block if queue is full. Do NOT drop frames, or we lose interpolation
-                        // data and waste CPU.
                         gpuBufferQueue.put(gpuBuffer);
                     } catch (InterruptedException e) {
                         releaseBuffer(gpuBuffer);
@@ -231,9 +192,8 @@ public class NblStreamer implements Runnable {
 
                 currentFrameIdx++;
 
-                // 5. 结束
+                // 结束处理
                 if (currentFrameIdx >= totalFrames) {
-                    // 确保最后一帧后发送 EOF
                     try {
                         gpuBufferQueue.put(BufferUtils.createByteBuffer(0)); // EOF
                     } catch (InterruptedException e) {
@@ -241,39 +201,26 @@ public class NblStreamer implements Runnable {
                         break;
                     }
                     isFinished = true;
-                    // Wait for seek or stop
                     while (isRunning.get() && seekTargetFrame == -1) {
                         try {
                             Thread.sleep(10);
-                        } catch (InterruptedException e) {
-                            break;
+                        } catch (InterruptedException ignored) {
                         }
                     }
-                    if (seekTargetFrame != -1) {
+                    if (seekTargetFrame != -1)
                         isFinished = false;
-                    }
                 }
             }
         } catch (Exception e) {
             Nebula.LOGGER.error("Streamer crashed", e);
         } finally {
-            if (cachedCompressedBuffer != null) {
-                totalAllocatedMemory.addAndGet(-cachedCompressedBuffer.capacity());
-                cachedCompressedBuffer = null;
-            }
-            if (cachedDecompressedBuffer != null) {
-                totalAllocatedMemory.addAndGet(-cachedDecompressedBuffer.capacity());
-                cachedDecompressedBuffer = null;
-            }
-
-            List<ByteBuffer> cleanupList = new ArrayList<>();
-            gpuBufferQueue.drainTo(cleanupList);
-            for (ByteBuffer buf : cleanupList) {
-                releaseBuffer(buf);
-            }
+            cleanup();
         }
     }
 
+    /**
+     * 处理解压后的帧数据，生成 SSBO 格式数据
+     */
     private ByteBuffer processFrameData(ByteBuffer data, boolean skipOutput, int frameIdx) {
         if (data.remaining() < 5)
             return null;
@@ -282,10 +229,8 @@ public class NblStreamer implements Runnable {
 
         ByteBuffer gpuBuffer = null;
         if (!skipOutput) {
-            // [Fix] Use local constant 40 to match writeParticleToGpuAbs logic.
-            // External AnimationFrame.BYTES_PER_PARTICLE might be different (e.g. 32),
-            // leading to overflow.
-            int requiredSize = particleCount * 40;
+            // [修改] 申请 48 字节/粒子的缓冲区 (SSBO std430)
+            int requiredSize = particleCount * 48;
             gpuBuffer = acquireBuffer(requiredSize);
         }
 
@@ -294,16 +239,13 @@ public class NblStreamer implements Runnable {
         else
             processPFrame(data, particleCount, gpuBuffer, frameIdx);
 
-        // No flip here as we used absolute puts
-
         return gpuBuffer;
     }
 
     private void processIFrame(ByteBuffer data, int particleCount, ByteBuffer gpuBuffer, int frameIdx) {
+        // [优化] 计算所有字段的偏移量，避免循环内重复计算
         int baseOffset = data.position();
         int N = particleCount;
-
-        // Pre-calculate offsets
         int xOff = baseOffset;
         int yOff = xOff + (N * 4);
         int zOff = yOff + (N * 4);
@@ -316,26 +258,20 @@ public class NblStreamer implements Runnable {
         int seqOff = texOff + N;
         int idOff = seqOff + N;
 
-        // [Single-threading] Use standard for-loop for better performance/less overhead
-        // on small/medium counts
         for (int i = 0; i < particleCount; i++) {
             int id = data.getInt(idOff + i * 4);
-
             ParticleState p = stateMap.computeIfAbsent(id, k -> new ParticleState());
-            p.lastSeenFrame = frameIdx; // Mark as seen
+            p.lastSeenFrame = frameIdx;
 
             float nx = data.getFloat(xOff + i * 4);
             float ny = data.getFloat(yOff + i * 4);
             float nz = data.getFloat(zOff + i * 4);
-
             p.x = nx;
             p.y = ny;
             p.z = nz;
-
-            // For I-Frame, snap prev to current
             p.prevX = nx;
             p.prevY = ny;
-            p.prevZ = nz;
+            p.prevZ = nz; // I-Frame Snap
 
             p.r = data.get(rOff + i) & 0xFF;
             p.g = data.get(gOff + i) & 0xFF;
@@ -345,16 +281,15 @@ public class NblStreamer implements Runnable {
             p.texID = data.get(texOff + i) & 0xFF;
             p.seqID = data.get(seqOff + i) & 0xFF;
 
-            if (gpuBuffer != null) {
+            if (gpuBuffer != null)
                 writeParticleToGpuAbs(gpuBuffer, i, p);
-            }
         }
     }
 
     private void processPFrame(ByteBuffer data, int particleCount, ByteBuffer gpuBuffer, int frameIdx) {
         int baseOffset = data.position();
         int N = particleCount;
-
+        // P-Frame 偏移计算
         int dxOff = baseOffset;
         int dyOff = dxOff + (N * 2);
         int dzOff = dyOff + (N * 2);
@@ -371,10 +306,8 @@ public class NblStreamer implements Runnable {
             int id = data.getInt(idOff + i * 4);
             ParticleState p = stateMap.computeIfAbsent(id, k -> new ParticleState());
 
-            // [Lifecycle Check] If not seen in prev frame (or ever), it's a SPAWN. Reset to
-            // 0.
-            boolean isSpawn = false;
-            if (p.lastSeenFrame != frameIdx - 1) {
+            boolean isSpawn = (p.lastSeenFrame != frameIdx - 1);
+            if (isSpawn) {
                 p.x = 0;
                 p.y = 0;
                 p.z = 0;
@@ -385,135 +318,125 @@ public class NblStreamer implements Runnable {
                 p.size = 0;
                 p.texID = 0;
                 p.seqID = 0;
-                isSpawn = true;
             }
-            p.lastSeenFrame = frameIdx; // Mark as seen in this frame
+            p.lastSeenFrame = frameIdx;
 
-            // Store old values for valid interpolation
-            float oldX = p.x;
-            float oldY = p.y;
-            float oldZ = p.z;
+            float oldX = p.x, oldY = p.y, oldZ = p.z;
 
-            // Apply deltas
+            // 应用增量 (Short / 1000.0)
             p.x += data.getShort(dxOff + i * 2) / 1000.0f;
             p.y += data.getShort(dyOff + i * 2) / 1000.0f;
             p.z += data.getShort(dzOff + i * 2) / 1000.0f;
-
             p.r = (p.r + data.get(drOff + i)) & 0xFF;
             p.g = (p.g + data.get(dgOff + i)) & 0xFF;
             p.b = (p.b + data.get(dbOff + i)) & 0xFF;
             p.a = (p.a + data.get(daOff + i)) & 0xFF;
-
             p.size += data.getShort(sizeOff + i * 2) / 100.0f;
             p.texID = (p.texID + data.get(texOff + i)) & 0xFF;
             p.seqID = (p.seqID + data.get(seqOff + i)) & 0xFF;
 
-            // [Interpolation Fix]
             if (isSpawn) {
-                // Start of life: Snap prev to current (No interpolation from 0)
                 p.prevX = p.x;
                 p.prevY = p.y;
                 p.prevZ = p.z;
             } else {
-                // Update: prev is the state BEFORE applying delta
                 p.prevX = oldX;
                 p.prevY = oldY;
                 p.prevZ = oldZ;
             }
 
-            if (gpuBuffer != null) {
+            if (gpuBuffer != null)
                 writeParticleToGpuAbs(gpuBuffer, i, p);
-            }
         }
     }
 
-    // Thread-safe absolute write to GPU buffer
+    /**
+     * 将粒子数据写入 GPU 缓冲区 (SSBO std430 格式)
+     * <p>
+     * Layout (48 bytes):
+     * [0-11] PrevPos.xyz
+     * [12-15] Size
+     * [16-27] CurPos.xyz
+     * [28-31] Color (Packed RGBA)
+     * [32-35] TexID
+     * [36-47] Padding
+     * </p>
+     */
     private void writeParticleToGpuAbs(ByteBuffer buf, int index, ParticleState p) {
-        // 40 bytes per particle
-        int offset = index * 40;
+        int offset = index * 48; // 48 bytes per particle
 
-        // [Fix] Safety check to prevent IndexOutOfBoundsException
-        if (offset + 40 > buf.capacity()) {
-            // This should technically not happen if acquireBuffer is correct, but let's be
-            // safe.
-            // However, we cannot easily resize 'buf' here as it's passed by reference and
-            // might be in use.
-            // The improved acquireBuffer logic should prevent this.
-            // For now, just return to avoid crash, but log error once.
+        // 越界检查
+        if (offset + 48 > buf.capacity()) {
             if (index == 0)
-                Nebula.LOGGER.error("Buffer overflow in writeParticleToGpuAbs! Cap: {}, Req: {}", buf.capacity(),
-                        offset + 40);
+                Nebula.LOGGER.error("Buffer overflow! Cap: {}, Req: {}", buf.capacity(), offset + 48);
             return;
         }
 
-        // [Pos layout]: prevX, prevY, prevZ, curX, curY, curZ
+        // === Vec4 #1: PrevPos(xyz) + Size(w) ===
         buf.putFloat(offset, p.prevX);
         buf.putFloat(offset + 4, p.prevY);
         buf.putFloat(offset + 8, p.prevZ);
+        buf.putFloat(offset + 12, p.size);
 
-        buf.putFloat(offset + 12, p.x);
-        buf.putFloat(offset + 16, p.y);
-        buf.putFloat(offset + 20, p.z);
+        // === Vec4 #2: CurPos(xyz) + Color(w) ===
+        buf.putFloat(offset + 16, p.x);
+        buf.putFloat(offset + 20, p.y);
+        buf.putFloat(offset + 24, p.z);
 
-        buf.put(offset + 24, (byte) p.r);
-        buf.put(offset + 25, (byte) p.g);
-        buf.put(offset + 26, (byte) p.b);
-        buf.put(offset + 27, (byte) p.a);
+        // 颜色压缩 (RGBA 4 bytes -> 1 int)
+        // Little Endian: ABGR in int memory (but GL reads bytes directly)
+        int colorPacked = (p.a << 24) | (p.b << 16) | (p.g << 8) | p.r;
+        buf.putInt(offset + 28, colorPacked);
 
-        buf.putFloat(offset + 28, p.size);
-        buf.putFloat(offset + 32, ParticleTextureManager.calculateLayerIndex(p.texID, p.seqID));
-        buf.putFloat(offset + 36, 0); // Padding
+        // === Vec4 #3: TexID, SeqID, Padding... ===
+        // 预计算 Texture Layer
+        float layerIndex = ParticleTextureManager.calculateLayerIndex(p.texID, p.seqID);
+        buf.putFloat(offset + 32, layerIndex);
+        buf.putFloat(offset + 36, 0f); // Padding
+        buf.putFloat(offset + 40, 0f); // Padding
+        buf.putFloat(offset + 44, 0f); // Padding
     }
 
-    /**
-     * 从池中获取 Buffer
-     */
-    private ByteBuffer acquireBuffer(int requiredSize) {
-        ByteBuffer buf = freeBuffers.poll();
+    // ... (acquireBuffer, releaseBuffer, 辅助方法等保持原样) ...
 
-        // 如果拿到 buffer 但太小，就丢弃（重新分配）
-        if (buf != null && buf.capacity() < requiredSize) {
-            totalAllocatedMemory.addAndGet(-buf.capacity());
-            buf = null;
+    // 内存管理辅助函数
+    private void ensureCompressedBuffer(int size) {
+        if (cachedCompressedBuffer == null || cachedCompressedBuffer.capacity() < size) {
+            if (cachedCompressedBuffer != null)
+                totalAllocatedMemory.addAndGet(-cachedCompressedBuffer.capacity());
+            int allocSize = (int) (size * 1.5);
+            cachedCompressedBuffer = ByteBuffer.allocateDirect(allocSize);
+            totalAllocatedMemory.addAndGet(allocSize);
         }
-
-        if (buf == null) {
-            // 需要分配新的
-            long currentTotal = totalAllocatedMemory.get();
-            if (currentTotal > MAX_TOTAL_MEMORY) {
-                // Nebula.LOGGER.warn("Direct Memory usage high ({} MB), forcing GC...",
-                // currentTotal / 1024 / 1024);
-                // System.gc(); // 减少频繁 GC，只在极端情况
-            }
-
-            int newSize = Math.max(INITIAL_BUFFER_SIZE, (int) (requiredSize * 1.2));
-            try {
-                buf = BufferUtils.createByteBuffer(newSize);
-                totalAllocatedMemory.addAndGet(newSize);
-            } catch (OutOfMemoryError e) {
-                System.gc(); // Only GC on OOM
-                try {
-                    Thread.sleep(100);
-                } catch (Exception ignored) {
-                }
-                buf = BufferUtils.createByteBuffer(newSize);
-            }
-        }
-
-        buf.clear();
-        buf.limit(requiredSize);
-        return buf;
     }
 
-    /**
-     * [重要] 归还 Buffer 到池中
-     * 必须在渲染完成后调用！
-     */
-    public static void releaseBuffer(ByteBuffer buf) {
-        if (buf != null && buf.capacity() > 0) { // EOF buffer (cap=0) 不回收
-            buf.clear();
-            freeBuffers.offer(buf);
+    private void ensureDecompressedBuffer(int size, int compressedSize) {
+        if (cachedDecompressedBuffer == null || cachedDecompressedBuffer.capacity() < size) {
+            if (cachedDecompressedBuffer != null)
+                totalAllocatedMemory.addAndGet(-cachedDecompressedBuffer.capacity());
+            int newSize = (int) (size > 0 ? size * 1.5 : compressedSize * 15);
+            cachedDecompressedBuffer = ByteBuffer.allocateDirect(newSize).order(ByteOrder.LITTLE_ENDIAN);
+            totalAllocatedMemory.addAndGet(newSize);
         }
+    }
+
+    private void cleanup() {
+        if (cachedCompressedBuffer != null) {
+            totalAllocatedMemory.addAndGet(-cachedCompressedBuffer.capacity());
+            cachedCompressedBuffer = null;
+        }
+        if (cachedDecompressedBuffer != null) {
+            totalAllocatedMemory.addAndGet(-cachedDecompressedBuffer.capacity());
+            cachedDecompressedBuffer = null;
+        }
+        List<ByteBuffer> cleanupList = new ArrayList<>();
+        gpuBufferQueue.drainTo(cleanupList);
+        for (ByteBuffer buf : cleanupList)
+            releaseBuffer(buf);
+    }
+
+    public BlockingQueue<ByteBuffer> getQueue() {
+        return gpuBufferQueue;
     }
 
     public void loadTextures() {
@@ -521,10 +444,6 @@ public class NblStreamer implements Runnable {
             ParticleTextureManager.loadFromNblEntries(textureEntries);
         else
             ParticleTextureManager.init();
-    }
-
-    public BlockingQueue<ByteBuffer> getQueue() {
-        return gpuBufferQueue;
     }
 
     public void stop() {
@@ -543,15 +462,56 @@ public class NblStreamer implements Runnable {
         return totalFrames;
     }
 
-    public float[] getBboxMin() {
-        return bboxMin;
+    /**
+     * 获取当前分配的总堆外内存大小 (用于 DebugHud)
+     */
+    public static long getTotalAllocatedMemory() {
+        return totalAllocatedMemory.get();
     }
 
-    public float[] getBboxMax() {
-        return bboxMax;
+    /**
+     * 从池中获取 Buffer (如果不够大则新建)
+     */
+    private ByteBuffer acquireBuffer(int requiredSize) {
+        ByteBuffer buf = freeBuffers.poll();
+
+        // 如果拿到 buffer 但太小，就丢弃（重新分配）
+        if (buf != null && buf.capacity() < requiredSize) {
+            totalAllocatedMemory.addAndGet(-buf.capacity());
+            buf = null;
+        }
+
+        if (buf == null) {
+            // 内存分配策略：至少分配 INITIAL_BUFFER_SIZE，或者是需求的 1.2 倍
+            int newSize = Math.max(INITIAL_BUFFER_SIZE, (int) (requiredSize * 1.2));
+            try {
+                buf = BufferUtils.createByteBuffer(newSize);
+                totalAllocatedMemory.addAndGet(newSize);
+            } catch (OutOfMemoryError e) {
+                System.gc();
+                try {
+                    Thread.sleep(10);
+                } catch (Exception ignored) {
+                }
+                buf = BufferUtils.createByteBuffer(newSize);
+                totalAllocatedMemory.addAndGet(newSize);
+            }
+        }
+
+        buf.clear();
+        buf.limit(requiredSize);
+        return buf;
     }
 
-    public List<ParticleTextureManager.TextureEntry> getTextureEntries() {
-        return textureEntries;
+    /**
+     * [重要] 归还 Buffer 到池中
+     * 必须在渲染完成后调用！
+     */
+    public static void releaseBuffer(ByteBuffer buf) {
+        // EOF buffer (cap=0) 不回收，其他回收
+        if (buf != null && buf.capacity() > 0) {
+            buf.clear();
+            freeBuffers.offer(buf);
+        }
     }
 }

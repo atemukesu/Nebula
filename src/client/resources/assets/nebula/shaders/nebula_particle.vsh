@@ -36,6 +36,7 @@ uniform float PartialTicks;
 out vec4 vColor;
 out vec2 vUV;
 flat out float vTexLayer;
+out float vDistance; // 粒子到摄像机的距离
 
 void main() {
     // 通过 InstanceID 获取粒子数据
@@ -57,7 +58,11 @@ void main() {
                    
     vec3 finalPos = center + offset;
     
-    gl_Position = ProjMat * ModelViewMat * vec4(finalPos, 1.0);
+    // 4. 计算到摄像机的距离 (用于片元着色器的距离补偿)
+    vec4 viewPos = ModelViewMat * vec4(finalPos, 1.0);
+    vDistance = length(viewPos.xyz);
+    
+    gl_Position = ProjMat * viewPos;
     
     vUV = UV;
     vTexLayer = p.texLayer;

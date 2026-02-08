@@ -56,6 +56,11 @@ public class GpuParticleRenderer {
     private static int uSampler0 = -1;
     private static int uUseTexture = -1;
     private static int uPartialTicks = -1;
+    private static int uEmissiveStrength = -1;
+    private static int uIrisMRT = -1;
+
+    // 发光强度 (可配置)
+    private static float emissiveStrength = 1.5f;
 
     // Shader 绑定点 (必须与 shader 中的 binding = 0 一致)
     private static final int SSBO_BINDING_INDEX = 0;
@@ -209,6 +214,8 @@ public class GpuParticleRenderer {
         uSampler0 = GL20.glGetUniformLocation(shaderProgram, "Sampler0");
         uUseTexture = GL20.glGetUniformLocation(shaderProgram, "UseTexture");
         uPartialTicks = GL20.glGetUniformLocation(shaderProgram, "PartialTicks");
+        uEmissiveStrength = GL20.glGetUniformLocation(shaderProgram, "EmissiveStrength");
+        uIrisMRT = GL20.glGetUniformLocation(shaderProgram, "IrisMRT");
     }
 
     /**
@@ -261,7 +268,9 @@ public class GpuParticleRenderer {
         // 渲染状态设置
         RenderSystem.disableCull();
         RenderSystem.enableBlend();
-        RenderSystem.blendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
+        // 使用加法混合 (Additive Blending) 让粒子发光效果更明显
+        // 在 Iris 模式下，这会让粒子真正"发光"而不是简单叠加
+        GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE);
         RenderSystem.enableDepthTest();
         RenderSystem.depthFunc(GL11.GL_LEQUAL);
         RenderSystem.depthMask(false);
@@ -276,6 +285,11 @@ public class GpuParticleRenderer {
         GL20.glUniform3f(uOrigin, originX, originY, originZ);
         if (uPartialTicks != -1)
             GL20.glUniform1f(uPartialTicks, partialTicks);
+        if (uEmissiveStrength != -1)
+            GL20.glUniform1f(uEmissiveStrength, emissiveStrength);
+        // 设置 IrisMRT: bindFramebuffer=false 表示 Iris 模式，启用 MRT
+        if (uIrisMRT != -1)
+            GL20.glUniform1i(uIrisMRT, bindFramebuffer ? 0 : 1);
 
         // 纹理设置
         if (useTexture && ParticleTextureManager.isInitialized()) {
@@ -633,5 +647,24 @@ public class GpuParticleRenderer {
      */
     public static boolean isPMBSupported() {
         return pmbSupported && !useFallback;
+    }
+
+    /**
+     * 获取当前发光强度
+     * 
+     * @return 发光强度值 (默认 1.5)
+     */
+    public static float getEmissiveStrength() {
+        return emissiveStrength;
+    }
+
+    /**
+     * 设置发光强度
+     * 
+     * @param strength 发光强度值 (建议范围 0.5 - 3.0)
+     */
+    public static void setEmissiveStrength(float strength) {
+        emissiveStrength = Math.max(0.1f, Math.min(5.0f, strength));
+        Nebula.LOGGER.info("[GpuParticleRenderer] Emissive strength set to: {}", emissiveStrength);
     }
 }

@@ -112,12 +112,12 @@ public class ClientAnimationManager {
         Camera camera = client.gameRenderer.getCamera();
         Vec3d cameraPos = camera.getPos();
 
-        // 【关键修复】从相机旋转构建视图矩阵
-        // camera.getRotation() 返回相机的朝向四元数
-        // 视图矩阵 = 相机变换的逆 = 旋转的共轭 (conjugate)
-        // 这样当相机向右转时，世界会向左移动（正确的视图变换）
-        Quaternionf cameraRotation = new Quaternionf(camera.getRotation()).conjugate();
-        Matrix4f mvMatrix = new Matrix4f().rotation(cameraRotation);
+        // 使用 Iris 传入的 ModelView 矩阵，移除平移分量
+        // 与原版模式保持一致的处理方式
+        Matrix4f mvMatrix = new Matrix4f(modelViewMatrix);
+        mvMatrix.m30(0.0f);
+        mvMatrix.m31(0.0f);
+        mvMatrix.m32(0.0f);
 
         // 计算相机方向向量 (用于 Billboard 朝向)
         float[] cameraRight = new float[3];
@@ -220,6 +220,9 @@ public class ClientAnimationManager {
         Camera camera = context.camera();
         Vec3d cameraPos = camera.getPos();
 
+        // 2. 获取模型视图矩阵并移除平移分量
+        Matrix4f modelViewMatrix = new Matrix4f(context.matrixStack().peek().getPositionMatrix());
+
         // -------------------------------------------------------------
         // 【修正】: 不再强制绑定 Main Framebuffer
         // we draw fast on the current framebuffer (which iris has prepared)
@@ -242,12 +245,10 @@ public class ClientAnimationManager {
         // 锁定深度写入 (只画颜色，不污染深度，防止半透明排序错误)
         RenderSystem.depthMask(false);
 
-        // 【关键修复】从相机旋转构建视图矩阵
-        // camera.getRotation() 返回相机的朝向四元数
-        // 视图矩阵 = 相机变换的逆 = 旋转的共轭 (conjugate)
-        // 这样当相机向右转时，世界会向左移动（正确的视图变换）
-        Quaternionf cameraRotation = new Quaternionf(camera.getRotation()).conjugate();
-        Matrix4f modelViewMatrix = new Matrix4f().rotation(cameraRotation);
+        // 强制移除矩阵的平移分量 (第4列的前3行)，只保留旋转和缩放
+        modelViewMatrix.m30(0.0f);
+        modelViewMatrix.m31(0.0f);
+        modelViewMatrix.m32(0.0f);
 
         Matrix4f projMatrix = context.projectionMatrix();
 

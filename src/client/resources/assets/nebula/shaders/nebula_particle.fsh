@@ -1,4 +1,4 @@
-#version 150
+#version 430 core
 
 in vec4 vColor;
 in vec2 vUV;
@@ -7,6 +7,8 @@ flat in float vTexLayer;
 uniform sampler2DArray Sampler0;
 uniform int UseTexture;
 
+// 只输出颜色，不使用 MRT
+// 大多数光影包的粒子不需要法线和高光数据
 out vec4 fragColor;
 
 void main() {

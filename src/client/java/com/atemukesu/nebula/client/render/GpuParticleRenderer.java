@@ -79,6 +79,10 @@ public class GpuParticleRenderer {
     private static boolean pmbSupported = false;
     private static boolean useFallback = false;
 
+    // 调试日志
+    private static int debugLogCounter = 0;
+    private static final int DEBUG_LOG_INTERVAL = 60;
+
     /**
      * 初始化渲染器
      * <p>
@@ -285,10 +289,41 @@ public class GpuParticleRenderer {
         // 绑定 SSBO 到 Binding Point 0
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, SSBO_BINDING_INDEX, ssbo);
 
+        // 调试日志
+        debugLogCounter++;
+        boolean shouldLog = (debugLogCounter % DEBUG_LOG_INTERVAL == 1);
+
+        if (shouldLog) {
+            Nebula.LOGGER.info("[GpuParticleRenderer DEBUG] Pre-draw state:");
+            Nebula.LOGGER.info("  - Shader program: {} (ours: {})", GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM),
+                    shaderProgram);
+            Nebula.LOGGER.info("  - VAO: {}", vao);
+            Nebula.LOGGER.info("  - SSBO: {}, size: {} bytes", ssbo, lastFrameUsedBytes);
+            Nebula.LOGGER.info("  - Particle count: {}", particleCount);
+            Nebula.LOGGER.info("  - Origin: ({}, {}, {})", originX, originY, originZ);
+            Nebula.LOGGER.info("  - bindFramebuffer: {}", bindFramebuffer);
+
+            // 检查 GL 错误
+            int preError = GL11.glGetError();
+            if (preError != GL11.GL_NO_ERROR) {
+                Nebula.LOGGER.warn("  - GL Error before draw: {}", preError);
+            }
+        }
+
         // === Draw Call ===
         GL30.glBindVertexArray(vao);
         GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
         GL30.glBindVertexArray(0);
+
+        if (shouldLog) {
+            // 检查 Draw Call 后的 GL 错误
+            int postError = GL11.glGetError();
+            if (postError != GL11.GL_NO_ERROR) {
+                Nebula.LOGGER.warn("[GpuParticleRenderer DEBUG] GL Error after draw: {}", postError);
+            } else {
+                Nebula.LOGGER.info("[GpuParticleRenderer DEBUG] Draw call completed successfully");
+            }
+        }
 
         // 对于 PMB 模式，在 draw 之后设置 fence
         if (!useFallback) {
@@ -305,21 +340,29 @@ public class GpuParticleRenderer {
         // === 状态恢复 ===
         ParticleTextureManager.unbind();
         RenderSystem.activeTexture(GL13.GL_TEXTURE0);
-        RenderSystem.setShaderTexture(0, SpriteAtlasTexture.BLOCK_ATLAS_TEXTURE);
+
+        // 【Iris 兼容】使用 glUseProgram(0) 仅解绑我们的 Shader Program
+        // 不要调用 RenderSystem.setShader(null)，这会破坏 Iris 的管线
+        // Iris 的 Mixin 会在渲染完成后恢复 Iris 的 Shader
+        GL20.glUseProgram(0);
 
         RenderSystem.defaultBlendFunc();
         RenderSystem.depthMask(true);
-        RenderSystem.disableBlend();
         RenderSystem.depthFunc(GL11.GL_LEQUAL);
         RenderSystem.enableDepthTest();
         RenderSystem.enableCull();
 
-        RenderSystem.setShader(() -> null);
-
-        // 【Iris 兼容】只有绑定过 FBO 才需要恢复
+        // 【Iris 兼容】根据环境决定是否禁用混合
         if (bindFramebuffer) {
+            // 原版环境：可以禁用混合和恢复纹理
+            RenderSystem.disableBlend();
+            RenderSystem.setShaderTexture(0, SpriteAtlasTexture.BLOCK_ATLAS_TEXTURE);
+            RenderSystem.setShader(() -> null);
             MinecraftClient.getInstance().getFramebuffer().beginWrite(false);
         }
+        // Iris 环境：不禁用混合，Iris 的半透明阶段需要混合开启
+        // 也不调用 setShader(null)，避免破坏 Iris 状态
+
         GL11.glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
     }
 

@@ -9,6 +9,8 @@
     "gui.nebula.config.render_in_game.desc": "控制是否在游戏中渲染粒子。关闭后将不再读取和处理粒子数据，极大提高性能。\n\n注意：即使关闭此选项，当检测到 ReplayMod 正在导出视频时，粒子仍会强制渲染。",
     "gui.nebula.config.show_debug_hud": "显示调试 HUD",
     "gui.nebula.config.show_debug_hud.desc": "在左上角显示粒子系统的调试信息（实例数、粒子数、缓冲区状态等）。",
+    "gui.nebula.config.on": "开启",
+    "gui.nebula.config.off": "关闭",
     "command.nebula.client.reload.success": "动画重载成功！",
     "command.nebula.client.reload.failed": "动画重载失败。详情请查看日志。",
     "hud.nebula.debug.info": "Nebula %s | 实例: %d | 粒子: %d | 高性能模式: %s | 缓冲区: %s"

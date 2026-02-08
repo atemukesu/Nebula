@@ -37,8 +37,9 @@ void main() {
     vec4 baseColor = texColor * vColor;
     
     // === 距离补偿 ===
-    // 远处的粒子增强亮度，让它们不会"消失"
-    float distanceFactor = 1.0 + clamp(vDistance / 64.0, 0.0, 2.0) * 0.5;
+    // 适度增强远处粒子的可见性，但避免过度发光导致"虚幻"感
+    // 最大增加 30% 亮度 (factor 1.0 ~ 1.3)
+    float distanceFactor = 1.0 + clamp(vDistance / 128.0, 0.0, 1.0) * 0.3;
     
     // === 发光强度 ===
     // 默认发光强度为 1.0，可通过 uniform 调整

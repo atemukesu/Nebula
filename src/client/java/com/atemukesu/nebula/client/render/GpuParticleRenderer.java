@@ -59,8 +59,8 @@ public class GpuParticleRenderer {
     private static int uEmissiveStrength = -1;
     private static int uIrisMRT = -1;
 
-    // 发光强度 (可配置)
-    private static float emissiveStrength = 1.5f;
+    // 发光强度
+    private static float emissiveStrength = 1.0f;
 
     // Shader 绑定点 (必须与 shader 中的 binding = 0 一致)
     private static final int SSBO_BINDING_INDEX = 0;
@@ -268,9 +268,17 @@ public class GpuParticleRenderer {
         // 渲染状态设置
         RenderSystem.disableCull();
         RenderSystem.enableBlend();
-        // 使用加法混合 (Additive Blending) 让粒子发光效果更明显
-        // 在 Iris 模式下，这会让粒子真正"发光"而不是简单叠加
-        GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE);
+
+        if (bindFramebuffer) {
+            // 原版模式 (bindFramebuffer=true): 使用加法混合模拟发光
+            // 适用于没有 Shader Bloom 的情况
+            GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE);
+        } else {
+            // Iris 模式 (bindFramebuffer=false): 使用标准混合
+            // 避免重叠部分过曝，发光效果由 MRT/Bloom 处理
+            GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
+        }
+
         RenderSystem.enableDepthTest();
         RenderSystem.depthFunc(GL11.GL_LEQUAL);
         RenderSystem.depthMask(false);

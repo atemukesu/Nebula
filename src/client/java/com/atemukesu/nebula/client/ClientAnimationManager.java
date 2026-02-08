@@ -4,11 +4,14 @@ import com.atemukesu.nebula.Nebula;
 import com.atemukesu.nebula.client.loader.NblStreamer;
 import com.atemukesu.nebula.client.render.AnimationFrame;
 import com.atemukesu.nebula.client.render.GpuParticleRenderer;
+import com.atemukesu.nebula.client.util.IrisUtil;
 import com.atemukesu.nebula.client.util.ReplayModUtil;
 import com.atemukesu.nebula.particle.loader.AnimationLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.render.Camera;
+import net.minecraft.client.render.Frustum;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
+import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
 import com.mojang.blaze3d.platform.GlStateManager;
 import com.mojang.blaze3d.systems.RenderSystem;
@@ -37,9 +40,14 @@ public class ClientAnimationManager {
     private int currentInstanceCount = 0;
     private int currentParticleCount = 0;
 
+    // 日志控制：避免刷屏
+    private boolean hasLoggedIrisRenderPath = false;
+    private boolean hasLoggedStandardRenderPath = false;
+
     private ClientAnimationManager() {
         // 初始化 GPU 渲染器
         GpuParticleRenderer.init();
+        Nebula.LOGGER.info("[Nebula] ClientAnimationManager initialized.");
     }
 
     public static ClientAnimationManager getInstance() {
@@ -83,20 +91,134 @@ public class ClientAnimationManager {
     }
 
     /**
+     * 直接渲染方法（供 Iris Mixin 调用）
+     * 接收 Iris 捕获的精确矩阵（带 Shader 抖动），绕过常规事件系统
+     * 
+     * @param modelViewMatrix  Iris 捕获的 G-Buffer 模型视图矩阵
+     * @param projectionMatrix Iris 捕获的 G-Buffer 投影矩阵
+     */
+    public void renderTickDirect(Matrix4f modelViewMatrix, Matrix4f projectionMatrix) {
+        // 记录 Iris 渲染路径日志（只记录一次）
+        if (!hasLoggedIrisRenderPath) {
+            Nebula.LOGGER.info("[Nebula/Render] ✓ Using Iris render path (renderTickDirect).");
+            hasLoggedIrisRenderPath = true;
+        }
+
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.world == null || client.player == null)
+            return;
+
+        // 获取相机信息
+        Camera camera = client.gameRenderer.getCamera();
+        Vec3d cameraPos = camera.getPos();
+
+        // 【关键修复】从相机旋转构建视图矩阵
+        // camera.getRotation() 返回相机的朝向四元数
+        // 视图矩阵 = 相机变换的逆 = 旋转的共轭 (conjugate)
+        // 这样当相机向右转时，世界会向左移动（正确的视图变换）
+        Quaternionf cameraRotation = new Quaternionf(camera.getRotation()).conjugate();
+        Matrix4f mvMatrix = new Matrix4f().rotation(cameraRotation);
+
+        // 计算相机方向向量 (用于 Billboard 朝向)
+        float[] cameraRight = new float[3];
+        float[] cameraUp = new float[3];
+        calculateCameraVectors(camera, cameraRight, cameraUp);
+
+        int totalParticles = 0;
+
+        // 创建渲染列表副本，避免长时间持有锁阻塞主线程
+        List<AnimationInstance> renderList;
+        synchronized (activeInstances) {
+            renderList = new ArrayList<>(activeInstances);
+        }
+
+        // 对于 Iris 路径，使用简化的距离剔除
+        // (完整的 Frustum 构建需要更多参数，这里使用 AABB 的快速距离检查)
+        double maxRenderDistance = client.options.getClampedViewDistance() * 16.0 * 2.0; // 扩大 2 倍以确保边缘不被剔除
+
+        for (AnimationInstance instance : renderList) {
+            // 【简化剔除】检查动画原点与相机的距离
+            Vec3d origin = instance.getOrigin();
+            double distSq = origin.squaredDistanceTo(cameraPos);
+            if (distSq > maxRenderDistance * maxRenderDistance) {
+                // 距离太远，跳过渲染
+                continue;
+            }
+
+            // 确保纹理已加载（第一次渲染时）
+            instance.ensureTexturesLoaded();
+
+            ByteBuffer frameData = instance.getNextFrame();
+
+            if (frameData != null && frameData.remaining() > 0) {
+                ByteBuffer readBuffer = frameData.slice();
+
+                int particleCount = readBuffer.remaining() / AnimationFrame.BYTES_PER_PARTICLE;
+                totalParticles += particleCount;
+
+                // 计算粒子系统原点相对于相机的偏移（复用剔除时获取的 origin）
+                float relX = (float) (origin.x - cameraPos.x);
+                float relY = (float) (origin.y - cameraPos.y);
+                float relZ = (float) (origin.z - cameraPos.z);
+
+                // 计算插值系数
+                double now = ReplayModUtil.getCurrentAnimationTime();
+                double start = instance.startSeconds;
+                double elapsed = now - start;
+                double currentFrameFloat = elapsed * instance.targetFps;
+
+                float partialTicks = (float) (currentFrameFloat - (instance.renderedFrames - 1));
+                if (partialTicks < 0)
+                    partialTicks = 0;
+                if (partialTicks > 1)
+                    partialTicks = 1;
+
+                // 使用 GPU 渲染器绘制
+                // 【Iris 兼容】传入 bindFramebuffer=false，保持 Iris 的渲染目标
+                GpuParticleRenderer.render(
+                        readBuffer,
+                        particleCount,
+                        mvMatrix,
+                        projectionMatrix,
+                        cameraRight,
+                        cameraUp,
+                        relX,
+                        relY,
+                        relZ,
+                        partialTicks,
+                        false); // Iris 环境下不绑定 MC 主 FBO
+            }
+        }
+
+        currentParticleCount = totalParticles;
+    }
+
+    /**
      * 渲染 Tick（每帧调用）
      * 在 WorldRenderEvents.AFTER_TRANSLUCENT 中调用
+     * 
+     * 注意：当 Iris Shaders 激活时，渲染由 MixinWorldRenderer 处理，此方法会跳过
      */
     public void renderTick(WorldRenderContext context) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.world == null || client.player == null)
             return;
 
+        // [Iris 兼容] 如果 Iris 正在渲染，跳过此事件回调
+        // 渲染由 MixinWorldRenderer 在正确的时机处理
+        if (IrisUtil.isIrisRenderingActive()) {
+            return;
+        }
+
+        // 记录标准渲染路径日志（只记录一次）
+        if (!hasLoggedStandardRenderPath) {
+            Nebula.LOGGER.info("[Nebula/Render] ✓ Using standard render path (WorldRenderEvents.LAST).");
+            hasLoggedStandardRenderPath = true;
+        }
+
         // 1. 获取相机信息
         Camera camera = context.camera();
         Vec3d cameraPos = camera.getPos();
-
-        // 2. 获取模型视图矩阵并移除平移分量
-        Matrix4f modelViewMatrix = new Matrix4f(context.matrixStack().peek().getPositionMatrix());
 
         // -------------------------------------------------------------
         // 【修正】: 不再强制绑定 Main Framebuffer
@@ -107,7 +229,7 @@ public class ClientAnimationManager {
         // client.getFramebuffer().beginWrite(false); // REMOVED
 
         // -------------------------------------------------------------
-        // 【修改点 2】: 开启混合模式，实现“辉光叠加”效果
+        // 【修改点 2】: 开启混合模式，实现"辉光叠加"效果
         // SRC_ALPHA + ONE = 典型的加法混合 (Additive Blending)，自带发光感
         // -------------------------------------------------------------
         RenderSystem.enableBlend();
@@ -120,10 +242,12 @@ public class ClientAnimationManager {
         // 锁定深度写入 (只画颜色，不污染深度，防止半透明排序错误)
         RenderSystem.depthMask(false);
 
-        // 强制移除矩阵的平移分量 (第4列的前3行)，只保留旋转和缩放
-        modelViewMatrix.m30(0.0f);
-        modelViewMatrix.m31(0.0f);
-        modelViewMatrix.m32(0.0f);
+        // 【关键修复】从相机旋转构建视图矩阵
+        // camera.getRotation() 返回相机的朝向四元数
+        // 视图矩阵 = 相机变换的逆 = 旋转的共轭 (conjugate)
+        // 这样当相机向右转时，世界会向左移动（正确的视图变换）
+        Quaternionf cameraRotation = new Quaternionf(camera.getRotation()).conjugate();
+        Matrix4f modelViewMatrix = new Matrix4f().rotation(cameraRotation);
 
         Matrix4f projMatrix = context.projectionMatrix();
 
@@ -140,7 +264,19 @@ public class ClientAnimationManager {
             renderList = new ArrayList<>(activeInstances);
         }
 
+        // 获取视锥用于剔除
+        Frustum frustum = context.frustum();
+
         for (AnimationInstance instance : renderList) {
+            // 【视锥剔除】检查动画的 AABB 是否在视锥内
+            Box worldBbox = instance.getWorldBoundingBox();
+            if (frustum != null && worldBbox != null) {
+                if (!frustum.isVisible(worldBbox)) {
+                    // AABB 不在视锥内，跳过渲染
+                    continue;
+                }
+            }
+
             // 确保纹理已加载（第一次渲染时）
             instance.ensureTexturesLoaded();
 
@@ -456,6 +592,26 @@ public class ClientAnimationManager {
 
         public Vec3d getOrigin() {
             return origin;
+        }
+
+        /**
+         * 获取动画在世界坐标系中的 AABB
+         * 用于视锥剔除检测
+         * 
+         * @return 世界坐标系的边界框，如果数据不可用则返回 null
+         */
+        public Box getWorldBoundingBox() {
+            if (streamer == null)
+                return null;
+            float[] bboxMin = streamer.getBboxMin();
+            float[] bboxMax = streamer.getBboxMax();
+            if (bboxMin == null || bboxMax == null)
+                return null;
+
+            // 将相对于原点的 AABB 转换为世界坐标
+            return new Box(
+                    origin.x + bboxMin[0], origin.y + bboxMin[1], origin.z + bboxMin[2],
+                    origin.x + bboxMax[0], origin.y + bboxMax[1], origin.z + bboxMax[2]);
         }
     }
 }

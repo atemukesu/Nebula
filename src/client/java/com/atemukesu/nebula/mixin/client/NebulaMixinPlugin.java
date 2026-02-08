@@ -11,29 +11,51 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Mixin插件，用于实现对Replay Mod的“软依赖”。
- * 它的核心作用是在应用Mixin之前进行检查，确保只在Replay Mod存在时，
- * 我们针对它的Mixin（VideoRendererMixin）才会被应用，从而避免游戏崩溃。
+ * Mixin 插件，用于实现对可选 Mod 的"软依赖"。
+ * 
+ * 核心作用是在应用 Mixin 之前进行检查，确保只在目标 Mod 存在时，
+ * 针对它们的 Mixin 才会被应用，从而避免 ClassNotFoundException 导致游戏崩溃。
+ * 
+ * 当前支持的软依赖：
+ * - Replay Mod: VideoRendererMixin
+ * - Iris Shaders: MixinWorldRenderer
  */
 public class NebulaMixinPlugin implements IMixinConfigPlugin {
 
     @Override
     public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
-        // 如果是针对 Replay Mod 的 Mixin
+        // === Replay Mod 软依赖 ===
         if (mixinClassName.endsWith("VideoRendererMixin")) {
-            // 检查 Fabric 加载器是否加载了 replaymod
             boolean replayModLoaded = FabricLoader.getInstance().isModLoaded("replaymod");
             if (replayModLoaded) {
-                Nebula.LOGGER.info("Replay Mod detected. Applying mixin: {}", mixinClassName);
+                Nebula.LOGGER.info("[Nebula/Mixin] ✓ Replay Mod detected. Applying mixin: {}", mixinClassName);
+            } else {
+                Nebula.LOGGER.debug("[Nebula/Mixin] Replay Mod not found. Skipping mixin: {}", mixinClassName);
             }
             return replayModLoaded;
         }
+
+        // === Iris Shaders 软依赖 ===
+        // MixinIrisPipeline 直接 Mixin 到 Iris 的 IrisRenderingPipeline 类
+        if (mixinClassName.endsWith("MixinIrisPipeline")) {
+            boolean irisLoaded = FabricLoader.getInstance().isModLoaded("iris");
+            if (irisLoaded) {
+                Nebula.LOGGER.info("[Nebula/Mixin] ✓ Iris Shaders detected. Applying mixin: {}", mixinClassName);
+            } else {
+                Nebula.LOGGER.info(
+                        "[Nebula/Mixin] Iris Shaders not found. Skipping mixin: {} (using standard render events)",
+                        mixinClassName);
+            }
+            return irisLoaded;
+        }
+
         // 对于所有其他的 Mixin，总是应用
         return true;
     }
 
     @Override
     public void onLoad(String mixinPackage) {
+        Nebula.LOGGER.info("[Nebula/Mixin] Mixin plugin loaded for package: {}", mixinPackage);
     }
 
     @Override

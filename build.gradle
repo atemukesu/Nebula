@@ -50,7 +50,11 @@ dependencies {
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 	modImplementation("com.terraformersmc:modmenu:${project.modmenu_version}")
 
+	// Optional: Replay Mod (compile-only, soft dependency)
 	modCompileOnly "maven.modrinth:replaymod:${project.replaymod_version}"
+
+	compileOnly files('libs/iris-1.7.6+mc1.20.1.jar')
+	runtimeOnly files('libs/iris-1.7.6+mc1.20.1.jar')
 
 	implementation "com.github.luben:zstd-jni:1.5.5-5"
 	include "com.github.luben:zstd-jni:1.5.5-5"

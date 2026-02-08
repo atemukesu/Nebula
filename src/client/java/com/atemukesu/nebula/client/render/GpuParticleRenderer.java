@@ -8,6 +8,7 @@ import net.minecraft.util.Identifier;
 import org.joml.Matrix4f;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.*;
+import org.lwjgl.system.MemoryUtil;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -20,11 +21,18 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 
 /**
- * GPU 粒子渲染器 (SSBO 高性能版)
+ * GPU 粒子渲染器 (Persistent Mapped Buffer 高性能版)
  * <p>
- * 使用 OpenGL 4.3+ Shader Storage Buffer Object (SSBO) 存储粒子数据。
- * 相比传统的 Vertex Attributes，SSBO 极大减少了驱动开销并允许更灵活的内存访问。
+ * 使用 OpenGL 4.4+ Persistent Mapped Buffer 技术：
+ * - 持久映射缓冲区，整个程序生命周期内保持映射状态
+ * - 使用 Triple Buffering 避免 CPU-GPU 同步等待
+ * - 使用 Fence Sync 确保安全写入
  * </p>
+ * 
+ * 相比传统的 glBufferSubData：
+ * - 无需每帧 map/unmap 开销
+ * - 无需 buffer orphaning
+ * - 更低的驱动开销
  */
 public class GpuParticleRenderer {
 
@@ -34,7 +42,6 @@ public class GpuParticleRenderer {
     // OpenGL 对象句柄
     private static int vao = -1;
     private static int quadVbo = -1;
-    private static int ssbo = -1; // Shader Storage Buffer Object
     private static int shaderProgram = -1;
 
     private static boolean initialized = false;
@@ -50,20 +57,32 @@ public class GpuParticleRenderer {
     private static int uUseTexture = -1;
     private static int uPartialTicks = -1;
 
-    // SSBO 动态扩容控制
-    private static int currentBufferSize = 0;
-
     // Shader 绑定点 (必须与 shader 中的 binding = 0 一致)
     private static final int SSBO_BINDING_INDEX = 0;
 
     // 临时矩阵缓冲
     private static final FloatBuffer matrixBuffer = BufferUtils.createFloatBuffer(16);
+
+    // ========== Persistent Mapped Buffer 相关 ==========
+
+    // Triple Buffering: 3 个缓冲区轮流使用，避免 CPU-GPU 同步
+    private static final int BUFFER_COUNT = 3;
+    private static final int INITIAL_BUFFER_SIZE = 8 * 1024 * 1024; // 每个缓冲区 8MB
+
+    private static int[] ssbos = new int[BUFFER_COUNT];
+    private static ByteBuffer[] mappedBuffers = new ByteBuffer[BUFFER_COUNT];
+    private static long[] fences = new long[BUFFER_COUNT];
+    private static int currentBufferIndex = 0;
+    private static int currentBufferSize = INITIAL_BUFFER_SIZE;
+
     private static int lastFrameUsedBytes = 0;
+    private static boolean pmbSupported = false;
+    private static boolean useFallback = false;
 
     /**
      * 初始化渲染器
      * <p>
-     * 创建 Shader, VAO, Quad VBO 和 SSBO。
+     * 创建 Shader, VAO, Quad VBO 和 Persistent Mapped Buffers。
      * </p>
      */
     public static void init() {
@@ -74,6 +93,14 @@ public class GpuParticleRenderer {
 
         try {
             ParticleTextureManager.init();
+
+            // 检查 OpenGL 版本，需要 4.4+ 支持 PMB
+            String version = GL11.glGetString(GL11.GL_VERSION);
+            Nebula.LOGGER.info("[GpuParticleRenderer] OpenGL Version: {}", version);
+
+            // 检查是否支持 ARB_buffer_storage (OpenGL 4.4 核心功能)
+            pmbSupported = GL.getCapabilities().GL_ARB_buffer_storage;
+            Nebula.LOGGER.info("[GpuParticleRenderer] Persistent Mapped Buffer supported: {}", pmbSupported);
 
             // 1. 编译 Shader
             shaderProgram = createShaderProgram();
@@ -104,22 +131,69 @@ public class GpuParticleRenderer {
             GL20.glEnableVertexAttribArray(1); // in UV
             GL20.glVertexAttribPointer(1, 2, GL11.GL_FLOAT, false, strideQuad, 12);
 
-            // 注意：不再需要 glVertexAttribDivisor，数据全走 SSBO
-
             GL30.glBindVertexArray(0);
 
-            // 4. 创建 SSBO
-            ssbo = GL15.glGenBuffers();
-            currentBufferSize = 8 * 1024 * 1024; // 初始 8MB
-            GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, ssbo);
-            GL15.glBufferData(GL43.GL_SHADER_STORAGE_BUFFER, currentBufferSize, GL15.GL_STREAM_DRAW);
-            GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
+            // 4. 创建 Persistent Mapped Buffers (或降级到传统 SSBO)
+            if (pmbSupported) {
+                createPersistentMappedBuffers();
+            } else {
+                createFallbackBuffer();
+            }
 
             initialized = true;
-            Nebula.LOGGER.info("GpuParticleRenderer initialized (SSBO Mode).");
+            Nebula.LOGGER.info("[GpuParticleRenderer] Initialized successfully (PMB: {})", pmbSupported);
         } catch (Exception e) {
-            Nebula.LOGGER.error("Failed to initialize GpuParticleRenderer", e);
+            Nebula.LOGGER.error("[GpuParticleRenderer] Failed to initialize", e);
         }
+    }
+
+    /**
+     * 创建 Persistent Mapped Buffers (Triple Buffering)
+     */
+    private static void createPersistentMappedBuffers() {
+        int flags = GL44.GL_MAP_WRITE_BIT | GL44.GL_MAP_PERSISTENT_BIT | GL44.GL_MAP_COHERENT_BIT;
+
+        for (int i = 0; i < BUFFER_COUNT; i++) {
+            ssbos[i] = GL15.glGenBuffers();
+            GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, ssbos[i]);
+
+            // 使用 glBufferStorage 创建不可变存储，启用持久映射
+            GL44.glBufferStorage(GL43.GL_SHADER_STORAGE_BUFFER, currentBufferSize, flags);
+
+            // 获取持久映射指针
+            mappedBuffers[i] = GL30.glMapBufferRange(
+                    GL43.GL_SHADER_STORAGE_BUFFER,
+                    0,
+                    currentBufferSize,
+                    flags);
+
+            if (mappedBuffers[i] == null) {
+                Nebula.LOGGER.error("[GpuParticleRenderer] Failed to map buffer {}", i);
+                useFallback = true;
+                break;
+            }
+
+            fences[i] = 0; // 初始无 fence
+        }
+
+        GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
+
+        if (!useFallback) {
+            Nebula.LOGGER.info("[GpuParticleRenderer] Created {} Persistent Mapped Buffers ({} MB each)",
+                    BUFFER_COUNT, currentBufferSize / 1024 / 1024);
+        }
+    }
+
+    /**
+     * 降级方案：创建传统 SSBO
+     */
+    private static void createFallbackBuffer() {
+        useFallback = true;
+        ssbos[0] = GL15.glGenBuffers();
+        GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, ssbos[0]);
+        GL15.glBufferData(GL43.GL_SHADER_STORAGE_BUFFER, currentBufferSize, GL15.GL_STREAM_DRAW);
+        GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
+        Nebula.LOGGER.info("[GpuParticleRenderer] Using fallback SSBO mode ({} MB)", currentBufferSize / 1024 / 1024);
     }
 
     private static void resolveUniforms() {
@@ -135,25 +209,50 @@ public class GpuParticleRenderer {
 
     /**
      * 执行 SSBO 实例化渲染
+     * 
+     * @param bindFramebuffer 是否绑定 MC 主 Framebuffer。
+     *                        在 Iris 环境下应传入 false，保持 Iris 的渲染目标。
+     *                        在原版环境下应传入 true。
      */
     @SuppressWarnings("deprecation")
     public static void renderInstanced(ByteBuffer data, int particleCount,
             Matrix4f modelViewMatrix, Matrix4f projMatrix,
             float[] cameraRight, float[] cameraUp,
             float originX, float originY, float originZ,
-            boolean useTexture, float partialTicks) {
+            boolean useTexture, float partialTicks,
+            boolean bindFramebuffer) {
 
         if (particleCount <= 0 || data == null || !initialized || !shaderCompiled)
             return;
 
         RenderSystem.assertOnRenderThread();
 
-        // 确保写入 Main Framebuffer
-        MinecraftClient.getInstance().getFramebuffer().beginWrite(false);
+        int dataSize = data.remaining();
+        lastFrameUsedBytes = dataSize;
+
+        // 检查是否需要扩容（PMB 模式下需要重新创建缓冲区）
+        if (dataSize > currentBufferSize) {
+            expandBuffers(dataSize);
+        }
+
+        // 选择当前帧使用的缓冲区，并上传数据
+        int ssbo;
+        if (useFallback) {
+            ssbo = uploadDataFallback(data, dataSize);
+        } else {
+            ssbo = uploadDataPMB(data, dataSize);
+        }
 
         // 备份视口
         int[] viewport = new int[4];
         GL11.glGetIntegerv(GL11.GL_VIEWPORT, viewport);
+
+        // 【Iris 兼容】只有在非 Iris 模式下，才强制绑定 MC 主 Framebuffer
+        // 在 Iris 环境下，Iris 已经绑定了它的 G-Buffer 或 Translucent Buffer
+        // 绑定 MC 主 FBO 会覆盖 Iris 的渲染目标，导致粒子不可见
+        if (bindFramebuffer) {
+            MinecraftClient.getInstance().getFramebuffer().beginWrite(false);
+        }
 
         // 渲染状态设置
         RenderSystem.disableCull();
@@ -183,33 +282,25 @@ public class GpuParticleRenderer {
             GL20.glUniform1i(uUseTexture, 0);
         }
 
-        // === SSBO 数据上传 ===
-        GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, ssbo);
-        int needed = data.remaining();
-        lastFrameUsedBytes = needed;
-
-        // 自动扩容策略
-        if (needed > currentBufferSize) {
-            int newSize = Math.max(currentBufferSize * 2, needed);
-            currentBufferSize = newSize;
-            GL15.glBufferData(GL43.GL_SHADER_STORAGE_BUFFER, currentBufferSize, GL15.GL_STREAM_DRAW);
-            Nebula.LOGGER.info("SSBO Expanded to {} MB", newSize / 1024 / 1024);
-        } else {
-            // Orphan the buffer (废弃旧数据，避免同步等待)
-            GL15.glBufferData(GL43.GL_SHADER_STORAGE_BUFFER, currentBufferSize, GL15.GL_STREAM_DRAW);
-        }
-
-        // 写入数据
-        GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, data);
-
         // 绑定 SSBO 到 Binding Point 0
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, SSBO_BINDING_INDEX, ssbo);
-        GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0); // Unbind generic target
 
         // === Draw Call ===
         GL30.glBindVertexArray(vao);
         GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
         GL30.glBindVertexArray(0);
+
+        // 对于 PMB 模式，在 draw 之后设置 fence
+        if (!useFallback) {
+            // 删除旧 fence
+            if (fences[currentBufferIndex] != 0) {
+                GL32.glDeleteSync(fences[currentBufferIndex]);
+            }
+            // 设置新 fence，标记 GPU 开始使用这个缓冲区
+            fences[currentBufferIndex] = GL32.glFenceSync(GL32.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+            // 切换到下一个缓冲区
+            currentBufferIndex = (currentBufferIndex + 1) % BUFFER_COUNT;
+        }
 
         // === 状态恢复 ===
         ParticleTextureManager.unbind();
@@ -223,9 +314,103 @@ public class GpuParticleRenderer {
         RenderSystem.enableDepthTest();
         RenderSystem.enableCull();
 
-        RenderSystem.setShader(() -> null); // Clear internal shader cache
-        MinecraftClient.getInstance().getFramebuffer().beginWrite(false);
+        RenderSystem.setShader(() -> null);
+
+        // 【Iris 兼容】只有绑定过 FBO 才需要恢复
+        if (bindFramebuffer) {
+            MinecraftClient.getInstance().getFramebuffer().beginWrite(false);
+        }
         GL11.glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+    }
+
+    /**
+     * PMB 模式数据上传
+     */
+    private static int uploadDataPMB(ByteBuffer data, int dataSize) {
+        int bufferIndex = currentBufferIndex;
+
+        // 等待 GPU 完成对这个缓冲区的使用
+        if (fences[bufferIndex] != 0) {
+            int waitResult = GL32.glClientWaitSync(fences[bufferIndex], GL32.GL_SYNC_FLUSH_COMMANDS_BIT,
+                    1_000_000_000L); // 1秒超时
+            if (waitResult == GL32.GL_WAIT_FAILED) {
+                Nebula.LOGGER.warn("[GpuParticleRenderer] Fence wait failed");
+            } else if (waitResult == GL32.GL_TIMEOUT_EXPIRED) {
+                Nebula.LOGGER.warn("[GpuParticleRenderer] Fence wait timeout");
+            }
+            GL32.glDeleteSync(fences[bufferIndex]);
+            fences[bufferIndex] = 0;
+        }
+
+        // 【性能优化】使用 MemoryUtil.memCopy 直接内存拷贝
+        // 相比 ByteBuffer.put()，消除了 Java NIO 的边界检查开销
+        // 对于 20MB+ 数据，CPU 占用显著降低
+        ByteBuffer mappedBuffer = mappedBuffers[bufferIndex];
+        long destAddress = MemoryUtil.memAddress(mappedBuffer);
+        long srcAddress = MemoryUtil.memAddress(data);
+        MemoryUtil.memCopy(srcAddress, destAddress, dataSize);
+
+        return ssbos[bufferIndex];
+    }
+
+    /**
+     * 降级模式数据上传（传统 glBufferSubData）
+     */
+    private static int uploadDataFallback(ByteBuffer data, int dataSize) {
+        GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, ssbos[0]);
+
+        // Orphan the buffer (废弃旧数据，避免同步等待)
+        GL15.glBufferData(GL43.GL_SHADER_STORAGE_BUFFER, currentBufferSize, GL15.GL_STREAM_DRAW);
+
+        // 写入数据
+        GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, data);
+        GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
+
+        return ssbos[0];
+    }
+
+    /**
+     * 扩容缓冲区
+     */
+    private static void expandBuffers(int needed) {
+        int newSize = Math.max(currentBufferSize * 2, needed);
+        Nebula.LOGGER.info("[GpuParticleRenderer] Expanding buffers: {} MB -> {} MB",
+                currentBufferSize / 1024 / 1024, newSize / 1024 / 1024);
+
+        // 清理旧缓冲区
+        cleanupBuffers();
+
+        currentBufferSize = newSize;
+
+        // 重新创建缓冲区
+        if (pmbSupported && !useFallback) {
+            createPersistentMappedBuffers();
+        } else {
+            createFallbackBuffer();
+        }
+    }
+
+    /**
+     * 清理缓冲区（不清理 shader 和 VAO）
+     */
+    private static void cleanupBuffers() {
+        for (int i = 0; i < BUFFER_COUNT; i++) {
+            if (fences[i] != 0) {
+                GL32.glDeleteSync(fences[i]);
+                fences[i] = 0;
+            }
+            if (mappedBuffers[i] != null) {
+                // 解除映射
+                GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, ssbos[i]);
+                GL15.glUnmapBuffer(GL43.GL_SHADER_STORAGE_BUFFER);
+                mappedBuffers[i] = null;
+            }
+            if (ssbos[i] != 0) {
+                GL15.glDeleteBuffers(ssbos[i]);
+                ssbos[i] = 0;
+            }
+        }
+        GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
     }
 
     private static void uploadMatrix(int location, Matrix4f matrix) {
@@ -237,19 +422,51 @@ public class GpuParticleRenderer {
         }
     }
 
-    // 对外封装方法
+    /**
+     * 渲染粒子（默认绑定 MC 主 Framebuffer，用于原版渲染路径）
+     */
     public static void render(ByteBuffer data, int particleCount,
             Matrix4f modelViewMatrix, Matrix4f projMatrix,
             float[] cameraRight, float[] cameraUp,
             float originX, float originY, float originZ,
             float partialTicks) {
+        render(data, particleCount, modelViewMatrix, projMatrix,
+                cameraRight, cameraUp, originX, originY, originZ, partialTicks, true);
+    }
+
+    /**
+     * 渲染粒子
+     * 
+     * @param data            粒子数据缓冲区
+     * @param particleCount   粒子数量
+     * @param modelViewMatrix 模型视图矩阵
+     * @param projMatrix      投影矩阵
+     * @param cameraRight     相机右向量
+     * @param cameraUp        相机上向量
+     * @param originX         原点 X
+     * @param originY         原点 Y
+     * @param originZ         原点 Z
+     * @param partialTicks    部分 ticks
+     * @param bindFramebuffer 是否绑定 MC 主 Framebuffer。
+     *                        Iris 环境下应传入 false，原版环境下应传入 true。
+     */
+    public static void render(ByteBuffer data, int particleCount,
+            Matrix4f modelViewMatrix, Matrix4f projMatrix,
+            float[] cameraRight, float[] cameraUp,
+            float originX, float originY, float originZ,
+            float partialTicks, boolean bindFramebuffer) {
         if (shaderCompiled) {
             renderInstanced(data, particleCount, modelViewMatrix, projMatrix,
-                    cameraRight, cameraUp, originX, originY, originZ, true, partialTicks);
+                    cameraRight, cameraUp, originX, originY, originZ, true, partialTicks, bindFramebuffer);
         }
     }
 
+    /**
+     * 清理渲染器
+     */
     public static void cleanup() {
+        cleanupBuffers();
+
         if (vao != -1) {
             GL30.glDeleteVertexArrays(vao);
             vao = -1;
@@ -258,10 +475,6 @@ public class GpuParticleRenderer {
             GL15.glDeleteBuffers(quadVbo);
             quadVbo = -1;
         }
-        if (ssbo != -1) {
-            GL15.glDeleteBuffers(ssbo);
-            ssbo = -1;
-        }
         if (shaderProgram > 0) {
             GL20.glDeleteProgram(shaderProgram);
             shaderProgram = -1;
@@ -269,23 +482,18 @@ public class GpuParticleRenderer {
         ParticleTextureManager.cleanup();
         initialized = false;
         shaderCompiled = false;
+        pmbSupported = false;
+        useFallback = false;
     }
 
     public static void shrinkBuffer() {
+        // PMB 模式下缩容需要重新创建缓冲区，开销较大
+        // 这里选择不自动缩容，保持当前大小
         if (!RenderSystem.isOnRenderThread()) {
-            RenderSystem.recordRenderCall(GpuParticleRenderer::shrinkBuffer);
             return;
-        }
-        int initialSize = 1024 * 1024;
-        if (currentBufferSize > initialSize && ssbo != -1) {
-            GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, ssbo);
-            GL15.glBufferData(GL43.GL_SHADER_STORAGE_BUFFER, initialSize, GL15.GL_STREAM_DRAW);
-            GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
-            currentBufferSize = initialSize;
         }
     }
 
-    // ... loadShaderSource, createShaderProgram (保持不变，省略) ...
     private static String loadShaderSource(Identifier id) {
         try {
             Optional<net.minecraft.resource.Resource> resource = MinecraftClient.getInstance().getResourceManager()
@@ -297,11 +505,16 @@ public class GpuParticleRenderer {
                 }
             }
         } catch (IOException e) {
-            Nebula.LOGGER.error("Failed to load shader: {}", id, e);
+            Nebula.LOGGER.error("[GpuParticleRenderer] Failed to load shader: {}", id, e);
         }
         return null;
     }
 
+    /**
+     * 创建 Shader 程序
+     * 
+     * @return Shader 程序句柄
+     */
     private static int createShaderProgram() {
         String vertexSource = loadShaderSource(VERTEX_SHADER_ID);
         String fragmentSource = loadShaderSource(FRAGMENT_SHADER_ID);
@@ -312,9 +525,21 @@ public class GpuParticleRenderer {
             vertexShader = GL20.glCreateShader(GL20.GL_VERTEX_SHADER);
             GL20.glShaderSource(vertexShader, vertexSource);
             GL20.glCompileShader(vertexShader);
+
+            if (GL20.glGetShaderi(vertexShader, GL20.GL_COMPILE_STATUS) == GL11.GL_FALSE) {
+                Nebula.LOGGER.error("[GpuParticleRenderer] Vertex shader compile error: {}",
+                        GL20.glGetShaderInfoLog(vertexShader));
+            }
+
             fragmentShader = GL20.glCreateShader(GL20.GL_FRAGMENT_SHADER);
             GL20.glShaderSource(fragmentShader, fragmentSource);
             GL20.glCompileShader(fragmentShader);
+
+            if (GL20.glGetShaderi(fragmentShader, GL20.GL_COMPILE_STATUS) == GL11.GL_FALSE) {
+                Nebula.LOGGER.error("[GpuParticleRenderer] Fragment shader compile error: {}",
+                        GL20.glGetShaderInfoLog(fragmentShader));
+            }
+
             program = GL20.glCreateProgram();
             GL20.glAttachShader(program, vertexShader);
             GL20.glAttachShader(program, fragmentShader);
@@ -322,6 +547,12 @@ public class GpuParticleRenderer {
             GL20.glBindAttribLocation(program, 0, "Position");
             GL20.glBindAttribLocation(program, 1, "UV");
             GL20.glLinkProgram(program);
+
+            if (GL20.glGetProgrami(program, GL20.GL_LINK_STATUS) == GL11.GL_FALSE) {
+                Nebula.LOGGER.error("[GpuParticleRenderer] Shader program link error: {}",
+                        GL20.glGetProgramInfoLog(program));
+            }
+
             return program;
         } finally {
             if (vertexShader != 0)
@@ -331,6 +562,11 @@ public class GpuParticleRenderer {
         }
     }
 
+    /**
+     * 检查是否初始化
+     * 
+     * @return 是否初始化
+     */
     public static boolean isInitialized() {
         return initialized;
     }
@@ -345,5 +581,14 @@ public class GpuParticleRenderer {
 
     public static int getTypeSize() {
         return lastFrameUsedBytes;
+    }
+
+    /**
+     * 检查是否支持 PMB
+     * 
+     * @return 是否支持 PMB
+     */
+    public static boolean isPMBSupported() {
+        return pmbSupported && !useFallback;
     }
 }

@@ -6,6 +6,7 @@ import com.atemukesu.nebula.client.render.AnimationFrame;
 import com.atemukesu.nebula.client.render.GpuParticleRenderer;
 import com.atemukesu.nebula.client.util.IrisUtil;
 import com.atemukesu.nebula.client.util.ReplayModUtil;
+import com.atemukesu.nebula.config.ModConfig;
 import com.atemukesu.nebula.particle.loader.AnimationLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.render.Camera;
@@ -64,6 +65,15 @@ public class ClientAnimationManager {
             return;
         }
 
+        // [Config Control]
+        // IsReplayModRendering True -> 强制渲染
+        // IsReplayModRendering False, GameRendering True -> 渲染
+        // IsReplayModRendering False, GameRendering False -> 不渲染且不加载
+        if (!ReplayModUtil.isRendering() && !ModConfig.getInstance().shouldRenderInGame()) {
+            // Discard: 不读取文件，不创建实例
+            return;
+        }
+
         try {
             File file = animationPath.toFile();
             AnimationInstance instance = new AnimationInstance(file, origin);
@@ -107,6 +117,11 @@ public class ClientAnimationManager {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.world == null || client.player == null)
             return;
+
+        // [Config Control] 如果不在 Replay 渲染模式且配置关闭了游戏内渲染，则跳过
+        if (!ReplayModUtil.isRendering() && !ModConfig.getInstance().shouldRenderInGame()) {
+            return;
+        }
 
         // 获取相机信息
         Camera camera = client.gameRenderer.getCamera();
@@ -203,6 +218,11 @@ public class ClientAnimationManager {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.world == null || client.player == null)
             return;
+
+        // [Config Control] 如果不在 Replay 渲染模式且配置关闭了游戏内渲染，则跳过
+        if (!ReplayModUtil.isRendering() && !ModConfig.getInstance().shouldRenderInGame()) {
+            return;
+        }
 
         // [Iris 兼容] 如果 Iris 正在渲染，跳过此事件回调
         // 渲染由 MixinWorldRenderer 在正确的时机处理

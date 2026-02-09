@@ -58,26 +58,66 @@ public class NebulaToolsWindow extends JFrame {
         });
     }
 
+    /**
+     * 确保图形环境可用
+     * Minecraft/Fabric 可能会设置 java.awt.headless=true，我们需要覆盖它
+     */
+    private static void ensureGraphicsEnvironment() {
+        // 强制禁用无头模式
+        System.setProperty("java.awt.headless", "false");
+    }
+
+    /**
+     * 检查是否支持图形界面
+     */
+    public static boolean isGraphicsSupported() {
+        ensureGraphicsEnvironment();
+        try {
+            return !java.awt.GraphicsEnvironment.isHeadless()
+                    && java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment() != null
+                    && java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices().length > 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     public static NebulaToolsWindow getInstance() {
         if (instance == null) {
+            if (!isGraphicsSupported()) {
+                throw new UnsupportedOperationException("Graphics environment not available (headless mode)");
+            }
             instance = new NebulaToolsWindow();
         }
         return instance;
     }
 
-    public static void showWindow() {
+    /**
+     * 显示工具窗口
+     * 
+     * @return true 如果成功打开，false 如果不支持图形界面
+     */
+    public static boolean showWindow() {
+        if (!isGraphicsSupported()) {
+            return false;
+        }
+
         SwingUtilities.invokeLater(() -> {
-            NebulaToolsWindow window = getInstance();
-            TranslatableText.updateLanguage();
-            window.updateTexts();
+            try {
+                NebulaToolsWindow window = getInstance();
+                TranslatableText.updateLanguage();
+                window.updateTexts();
 
-            // 启用性能统计收集
-            PerformanceStats.getInstance().setEnabled(true);
+                // 启用性能统计收集
+                PerformanceStats.getInstance().setEnabled(true);
 
-            window.setVisible(true);
-            window.toFront();
-            window.requestFocus();
+                window.setVisible(true);
+                window.toFront();
+                window.requestFocus();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
         });
+        return true;
     }
 
     public static void hideWindow() {

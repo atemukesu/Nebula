@@ -26,10 +26,17 @@ public class NebulaToolsCommand {
                 ClientCommandManager.literal("nebula_gui")
                         .executes(context -> {
                             try {
-                                NebulaToolsWindow.showWindow();
-                                context.getSource().sendFeedback(
-                                        Text.literal("§a" + TranslatableText.of("msg.window_opened")));
-                                return 1;
+                                boolean success = NebulaToolsWindow.showWindow();
+                                if (success) {
+                                    context.getSource().sendFeedback(
+                                            Text.literal("§a" + TranslatableText.of("msg.window_opened")));
+                                    return 1;
+                                } else {
+                                    // 不支持图形界面（无头模式）
+                                    context.getSource().sendError(
+                                            Text.literal("§c" + TranslatableText.of("msg.headless_mode")));
+                                    return 0;
+                                }
                             } catch (Exception e) {
                                 context.getSource().sendError(
                                         Text.literal("§c" + TranslatableText.of("msg.error_opening") + ": "

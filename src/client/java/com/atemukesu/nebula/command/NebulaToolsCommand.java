@@ -7,6 +7,7 @@ import com.mojang.brigadier.CommandDispatcher;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.command.CommandRegistryAccess;
 import net.minecraft.text.Text;
@@ -31,8 +32,6 @@ public class NebulaToolsCommand {
                                     boolean newState = !config.getShowDebugHud();
 
                                     config.setShowDebugHud(newState);
-                                    // 【重要】如果 config 类没有自动保存功能，这里记得手动调用 save()
-                                    // config.save();
 
                                     PerformanceStats.getInstance().setEnabled(newState);
 
@@ -45,13 +44,23 @@ public class NebulaToolsCommand {
                                                     .append(Text.translatable(statusKey).formatted(color)));
                                     return 1;
                                 }))
-                        // 2. Settings 命令分支
+                        // 打开 GUI
                         .then(ClientCommandManager.literal("settings")
                                 .executes(context -> {
-                                    MinecraftClient.getInstance().execute(() -> {
-                                        MinecraftClient.getInstance().setScreen(
-                                                NebulaYACLConfig.createConfigScreen(null)); // null parent screen
-                                    });
+                                    ClientTickEvents.END_CLIENT_TICK
+                                            .register(
+                                                    new ClientTickEvents.EndTick() {
+                                                        private boolean opened = false;
+
+                                                        @Override
+                                                        public void onEndTick(MinecraftClient client) {
+                                                            if (!opened) {
+                                                                client.setScreen(
+                                                                        NebulaYACLConfig.createConfigScreen(null));
+                                                                opened = true;
+                                                            }
+                                                        }
+                                                    });
                                     return 1;
                                 })));
     }

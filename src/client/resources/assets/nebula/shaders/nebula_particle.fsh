@@ -21,6 +21,10 @@ layout(location = 2) out vec4 fragData2;      // 高光/发光数据 (仅 Iris)
 
 void main() {
     vec4 texColor;
+
+    if (baseColor.a < 0.05) {
+        discard; // 只要这个像素是透明的，不管粒子整体是不是不透明，都给我扔掉！
+    }
     
     if (UseTexture == 1) {
         // 从纹理数组采样

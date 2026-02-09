@@ -57,10 +57,7 @@ dependencies {
     // YACL Dependency
     modImplementation "dev.isxander:yet-another-config-lib:3.5.0+1.20.1-fabric"
 
-	// Optional: Replay Mod
 	modCompileOnly "maven.modrinth:replaymod:${project.replaymod_version}"
-
-	modCompileOnly files('libs/iris-1.7.6+mc1.20.1.jar')
 
 	implementation "com.github.luben:zstd-jni:1.5.5-5"
 	include "com.github.luben:zstd-jni:1.5.5-5"

@@ -11,6 +11,7 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
+import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 import net.minecraft.util.math.Vec3d;
@@ -32,6 +33,13 @@ public class NebulaClient implements ClientModInitializer {
         // 负责驱动"常规模式"下的动画更新
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             ClientAnimationManager.getInstance().tick(client);
+        });
+
+        // 【渲染路径分离】
+        // 原版模式：使用 WorldRenderEvents.LAST 事件进行渲染
+        // Iris 模式：由 NebulaWorldRendererMixin 处理，此事件回调会跳过
+        WorldRenderEvents.LAST.register(context -> {
+            ClientAnimationManager.getInstance().renderTick(context);
         });
 
         DebugHud.register();

@@ -36,7 +36,8 @@ uniform float PartialTicks;
 out vec4 vColor;
 out vec2 vUV;
 flat out float vTexLayer;
-out float vDistance; // 粒子到摄像机的距离
+out float vDistance;           // 粒子到摄像机的距离
+flat out float vBloomFactor;   // 逐粒子的 Bloom 亮度因子 (传递给片元着色器)
 
 void main() {
     // 通过 InstanceID 获取粒子数据
@@ -66,4 +67,9 @@ void main() {
     
     vUV = UV;
     vTexLayer = p.texLayer;
+    
+    // 5. Bloom 因子 - 使用较高的默认值产生明显的 HDR 发光
+    // TODO: 未来可从 Particle 结构的 pad1/pad2/pad3 字段中读取
+    // 例如: vBloomFactor = p.pad1;  // 需要在 Java 端填充该字段
+    vBloomFactor = 2.5;
 }

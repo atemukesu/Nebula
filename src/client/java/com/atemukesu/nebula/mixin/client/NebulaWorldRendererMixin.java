@@ -66,13 +66,21 @@ public class NebulaWorldRendererMixin {
                         irisChecked = true;
                 }
 
+                // 2. 检测 Iris 是否激活
+                boolean irisActive = IrisUtil.isIrisRenderingActive();
+
+                // 【渲染路径分离】
+                // 如果 Iris 未激活，跳过此 Mixin 渲染
+                // 原版模式由 WorldRenderEvents.LAST 事件处理
+                if (!irisActive) {
+                        return;
+                }
+
                 int previousFBO = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
                 boolean isIrisMode = false;
 
-                // 2. 检测 Iris 是否激活，并尝试绑定 Iris 的半透明 FBO
-                boolean irisActive = IrisUtil.isIrisRenderingActive();
-
-                if (irisActive && irisPipelineManager != null) {
+                // 3. 尝试绑定 Iris 的半透明 FBO
+                if (irisPipelineManager != null) {
                         try {
                                 // pipeline = Iris.getPipelineManager().getPipelineNullable();
                                 Object pipeline = getPipelineMethod.invoke(irisPipelineManager);
@@ -108,38 +116,34 @@ public class NebulaWorldRendererMixin {
                         }
                 }
 
-                // 普通模式日志
-                if (!isIrisMode && !hasLoggedStandardPath) {
-                        Nebula.LOGGER.info("[Nebula/Render] ✓ Using standard render path (Mixin only).");
-                        hasLoggedStandardPath = true;
-                        hasLoggedIrisPath = false;
+                // 如果 Iris 检测失败（FBO 绑定失败），也跳过
+                // 让 WorldRenderEvents.LAST 事件作为后备
+                if (!isIrisMode) {
+                        return;
                 }
 
-                // 3. 渲染状态设置
+                // 4. 渲染状态设置
                 RenderSystem.enableBlend();
                 RenderSystem.defaultBlendFunc();
                 RenderSystem.disableCull();
                 RenderSystem.depthMask(false);
 
-                // 4. 执行渲染
-                // isIrisMode = true 时传入 bindFramebuffer=false (保持 Iris FBO)
-                // isIrisMode = false 时传入 bindFramebuffer=true (绑定 MC 主 FBO)
+                // 5. 执行渲染
+                // Iris 模式传入 bindFramebuffer=false (保持 Iris FBO)
                 Matrix4f modelView = matrices.peek().getPositionMatrix();
                 ClientAnimationManager.getInstance().renderTickMixin(
                                 modelView,
                                 projection,
                                 camera,
                                 this.frustum,
-                                !isIrisMode); // bindFramebuffer: 普通模式 true, Iris 模式 false
+                                false); // Iris 模式不绑定 MC 主 FBO
 
-                // 5. 恢复状态
+                // 6. 恢复状态
                 RenderSystem.enableCull();
                 RenderSystem.depthMask(true);
 
-                // 恢复 FBO (如果绑定了 Iris FBO)
-                if (isIrisMode) {
-                        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, previousFBO);
-                }
+                // 恢复 FBO
+                GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, previousFBO);
         }
 
         @Unique

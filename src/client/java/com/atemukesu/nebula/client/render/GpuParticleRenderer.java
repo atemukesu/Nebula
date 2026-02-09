@@ -312,6 +312,8 @@ public class GpuParticleRenderer {
         stats.setPmbSupported(pmbSupported);
         stats.setUsingFallback(useFallback);
         stats.setIrisMode(!bindFramebuffer);
+        stats.setOrigin(originX, originY, originZ);
+        stats.setShouldBindFramebuffer(bindFramebuffer);
 
         // 检查 GL 错误
         int preError = GL11.glGetError();

@@ -48,8 +48,7 @@ public class PerformanceStats {
     private LinkedList<Integer> usedBufferHistory;
     private LinkedList<Double> fpsHistory;
 
-    // ========== FPS 计算 ==========
-    private long lastFpsUpdateTime = 0;
+    private long lastHistoryUpdateTime = 0;
     private double currentFps = 0;
 
     // ========== GL 错误 ==========
@@ -101,6 +100,8 @@ public class PerformanceStats {
 
     // ========== 帧生命周期 ==========
 
+    // ========== 帧生命周期 ==========
+
     public void beginFrame() {
         if (!enabled) {
             return;
@@ -115,29 +116,40 @@ public class PerformanceStats {
 
         lastFrameTimeNs = System.nanoTime() - frameStartTimeNs;
         renderTimeMs = lastFrameTimeNs / 1_000_000.0;
+    }
+
+    /**
+     * 每帧更新逻辑，由 DebugHud 调用
+     * 只有当 HUD 开启时才会调用，符合“不显示不统计”的要求
+     */
+    public void update() {
+        if (!enabled) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        if (now - lastHistoryUpdateTime < 500) {
+            return;
+        }
+        lastHistoryUpdateTime = now;
+
+        // 使用 MinecraftClient 的 FPS 计数器
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client != null) {
+            currentFps = client.getCurrentFps();
+            tickDelta = client.getTickDelta();
+        }
 
         // 更新历史数据
         addToHistory(particleCountHistory, particleCount);
         addToHistory(renderTimeHistory, renderTimeMs);
         addToHistory(uploadTimeHistory, uploadTimeMs);
         addToHistory(usedBufferHistory, usedBufferBytes);
+        addToHistory(fpsHistory, currentFps);
 
-        // 使用 MinecraftClient 的 FPS 计数器
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client != null) {
-            // 从 MC 获取当前 FPS（更精确）
-            currentFps = client.getCurrentFps();
-
-            // 获取 tickDelta
-            tickDelta = client.getTickDelta();
-        }
-
-        // 每 500ms 更新一次 FPS 历史
-        long now = System.currentTimeMillis();
-        if (now - lastFpsUpdateTime >= 500) {
-            addToHistory(fpsHistory, currentFps);
-            lastFpsUpdateTime = now;
-        }
+        // 重要：重置每帧计算的数据，确保如果下一帧没有渲染粒子（不调用 beginFrame），数据显示为 0
+        renderTimeMs = 0;
+        uploadTimeMs = 0;
     }
 
     private <T> void addToHistory(LinkedList<T> list, T value) {
@@ -202,6 +214,36 @@ public class PerformanceStats {
     public void setLastGlError(int error, String message) {
         this.lastGlError = error;
         this.lastGlErrorMessage = message;
+    }
+
+    // ========== 调试数据 ==========
+    private double originX, originY, originZ;
+    private boolean shouldBindFramebuffer;
+
+    public void setOrigin(double x, double y, double z) {
+        this.originX = x;
+        this.originY = y;
+        this.originZ = z;
+    }
+
+    public void setShouldBindFramebuffer(boolean bind) {
+        this.shouldBindFramebuffer = bind;
+    }
+
+    public double getOriginX() {
+        return originX;
+    }
+
+    public double getOriginY() {
+        return originY;
+    }
+
+    public double getOriginZ() {
+        return originZ;
+    }
+
+    public boolean shouldBindFramebuffer() {
+        return shouldBindFramebuffer;
     }
 
     // ========== Getters ==========
@@ -274,30 +316,43 @@ public class PerformanceStats {
         return lastGlErrorMessage;
     }
 
+    public long getLastHistoryUpdateTime() {
+        return lastHistoryUpdateTime;
+    }
+
     // ========== 历史数据 Getters ==========
 
+    // 直接返回 List，避免每帧复制带来的性能开销 (GC)
+    // 调用者只能在渲染线程读取，且不应修改
+
     public LinkedList<Integer> getParticleCountHistory() {
-        return new LinkedList<>(particleCountHistory);
+        return particleCountHistory;
     }
 
     public LinkedList<Double> getRenderTimeHistory() {
-        return new LinkedList<>(renderTimeHistory);
+        return renderTimeHistory;
     }
 
     public LinkedList<Double> getUploadTimeHistory() {
-        return new LinkedList<>(uploadTimeHistory);
+        return uploadTimeHistory;
     }
 
     public LinkedList<Integer> getUsedBufferHistory() {
-        return new LinkedList<>(usedBufferHistory);
+        return usedBufferHistory;
     }
 
     public LinkedList<Double> getFpsHistory() {
-        return new LinkedList<>(fpsHistory);
+        return fpsHistory;
     }
 
     // ========== 格式化方法 ==========
 
+    /**
+     * 格式化字节大小
+     * 
+     * @param bytes 字节数
+     * @return 格式化后的字符串
+     */
     public String formatBufferSize(int bytes) {
         if (bytes >= 1024 * 1024) {
             return String.format("%.2f MB", bytes / (1024.0 * 1024.0));

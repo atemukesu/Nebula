@@ -37,6 +37,23 @@ public class NebulaYACLConfig {
                                                                                 config::setShowDebugHud)
                                                                 .controller(BooleanControllerBuilder::create)
                                                                 .build())
+                                                .option(Option.<Boolean>createBuilder()
+                                                                .name(Text.translatable("gui.nebula.config.show_stats"))
+                                                                .description(OptionDescription.of(Text.translatable(
+                                                                                "gui.nebula.config.show_stats.desc")))
+                                                                .binding(true, config::getShowPerformanceStats,
+                                                                                config::setShowPerformanceStats)
+                                                                .controller(BooleanControllerBuilder::create)
+                                                                .build())
+                                                .option(Option.<Boolean>createBuilder()
+                                                                .name(Text.translatable(
+                                                                                "gui.nebula.config.show_charts"))
+                                                                .description(OptionDescription.of(Text.translatable(
+                                                                                "gui.nebula.config.show_charts.desc")))
+                                                                .binding(true, config::getShowCharts,
+                                                                                config::setShowCharts)
+                                                                .controller(BooleanControllerBuilder::create)
+                                                                .build())
                                                 .build())
                                 .save(ConfigManager::saveConfig)
                                 .build()

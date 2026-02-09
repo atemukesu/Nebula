@@ -3,7 +3,8 @@
 in vec4 vColor;
 in vec2 vUV;
 flat in float vTexLayer;
-in float vDistance; // 从顶点着色器传入的距离
+in float vDistance;           // 从顶点着色器传入的距离
+flat in float vBloomFactor;   // 接收顶点传入的亮度 (逐粒子 Bloom 因子)
 
 uniform sampler2DArray Sampler0;
 uniform int UseTexture;
@@ -34,33 +35,21 @@ void main() {
         texColor = vec4(vec3(coreBrightness), alpha);
     }
     
+    // [借鉴点]：不要只依赖 EmissiveStrength，而是乘上逐粒子的 vBloomFactor
+    // MadParticles 逻辑：vertexColor * sizeExtraLight.y
     vec4 baseColor = texColor * vColor;
     
-    // === 距离补偿 ===
-    // 适度增强远处粒子的可见性，但避免过度发光导致"虚幻"感
-    // 最大增加 30% 亮度 (factor 1.0 ~ 1.3)
-    float distanceFactor = 1.0 + clamp(vDistance / 128.0, 0.0, 1.0) * 0.3;
+    // 允许 RGB 值超过 1.0 (HDR)
+    // 这种 "过曝" 的颜色会被光影包捕捉并产生强烈的辉光
+    vec3 hdrColor = baseColor.rgb * vBloomFactor * EmissiveStrength;
     
-    // === 发光强度 ===
-    // 默认发光强度为 1.0，可通过 uniform 调整
-    float emissive = (EmissiveStrength > 0.0) ? EmissiveStrength : 1.0;
+    // === 输出 ===
+    fragColor = vec4(hdrColor, baseColor.a);
     
-    // 应用发光和距离补偿
-    vec3 glowColor = baseColor.rgb * emissive * distanceFactor;
-    
-    // === 输出颜色 ===
-    fragColor = vec4(glowColor, baseColor.a);
-    
-    // === MRT 输出 (仅 Iris 光影模式) ===
+    // === Iris MRT 兼容 (保留 Nebula 的优势) ===
     if (IrisMRT == 1) {
-        // 光照数据：设置为最大光照 (模拟完全暴露在光源下)
-        // lmcoord 格式: (blockLight, skyLight) 归一化到 [0,1]
         fragData1 = vec4(1.0, 1.0, 0.0, 1.0);
-        
-        // 发光/高光数据 (对于 labPBR/oldPBR 格式)
-        // r: smoothness, g: metalness, b: emissiveness
-        // 将发光度设为最大，让 Iris 知道这是发光物体
-        fragData2 = vec4(0.0, 0.0, emissive, 1.0);
+        // 让 fragData2 的发光强度也受 vBloomFactor 影响
+        fragData2 = vec4(0.0, 0.0, min(1.0, EmissiveStrength * vBloomFactor * 0.5), 1.0);
     }
-    // 原版模式下不需要额外输出，fragData1/fragData2 会被忽略
 }

@@ -341,16 +341,20 @@ public class ClientAnimationManager {
     }
 
     /**
-     * 渲染 Tick（每帧调用）- 已废弃
+     * 渲染 Tick（每帧调用）- 原版模式入口
      * 
-     * @deprecated 请使用 {@link #renderTickMixin} 代替。此方法仅保留用于兼容，不再被调用。
+     * 由 WorldRenderEvents.LAST 事件触发，仅在原版模式（非 Iris）下执行。
+     * Iris 模式下由 NebulaWorldRendererMixin 处理，此方法会跳过。
      * 
-     *             注意：当 Iris Shaders 激活时，渲染由 MixinWorldRenderer 处理，此方法会跳过
+     * @param context 世界渲染上下文
      */
     public void renderTick(WorldRenderContext context) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.world == null || client.player == null)
             return;
+
+        // 开始帧计时
+        PerformanceStats.getInstance().beginFrame();
 
         // [Config Control] 如果不在 Replay 渲染模式且配置关闭了游戏内渲染，则跳过
         if (!ReplayModUtil.isRendering() && !ModConfig.getInstance().shouldRenderInGame()) {
@@ -376,26 +380,6 @@ public class ClientAnimationManager {
         // 2. 获取模型视图矩阵并移除平移分量
         Matrix4f modelViewMatrix = new Matrix4f(context.matrixStack().peek().getPositionMatrix());
 
-        // -------------------------------------------------------------
-        // 【修正】: 不再强制绑定 Main Framebuffer
-        // we draw fast on the current framebuffer (which iris has prepared)
-        // switching FBOs without updating viewport/matrices causes the "giant
-        // flickering planes" issue
-        // -------------------------------------------------------------
-        // client.getFramebuffer().beginWrite(false); // REMOVED
-
-        // -------------------------------------------------------------
-        // 【修改点 2】: 开启混合模式，实现"辉光叠加"效果
-        // SRC_ALPHA + ONE = 典型的加法混合 (Additive Blending)，自带发光感
-        // -------------------------------------------------------------
-        RenderSystem.enableBlend();
-        RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
-
-        RenderSystem.enableDepthTest();
-        RenderSystem.depthFunc(GL11.GL_LEQUAL);
-        // 锁定深度写入 (只画颜色，不污染深度，防止半透明排序错误)
-        RenderSystem.depthMask(false);
-
         // 强制移除矩阵的平移分量 (第4列的前3行)，只保留旋转和缩放
         modelViewMatrix.m30(0.0f);
         modelViewMatrix.m31(0.0f);
@@ -403,7 +387,14 @@ public class ClientAnimationManager {
 
         Matrix4f projMatrix = context.projectionMatrix();
 
-        // 3. 计算相机方向向量 (用于 Billboard 朝向)
+        // 3. 渲染状态设置
+        RenderSystem.enableBlend();
+        RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
+        RenderSystem.enableDepthTest();
+        RenderSystem.depthFunc(GL11.GL_LEQUAL);
+        RenderSystem.depthMask(false);
+
+        // 4. 计算相机方向向量 (用于 Billboard 朝向)
         float[] cameraRight = new float[3];
         float[] cameraUp = new float[3];
         calculateCameraVectors(camera, cameraRight, cameraUp);
@@ -434,7 +425,7 @@ public class ClientAnimationManager {
 
             ByteBuffer frameData = instance.getNextFrame();
 
-            // 4. 使用 slice() 创建缓冲区视图
+            // 使用 slice() 创建缓冲区视图
             if (frameData != null && frameData.remaining() > 0) {
                 ByteBuffer readBuffer = frameData.slice();
 
@@ -444,52 +435,46 @@ public class ClientAnimationManager {
                 Vec3d origin = instance.getOrigin();
 
                 // 计算粒子系统原点相对于相机的偏移
-                // 必须转为 float 传给 GPU (Large Coordinate Problem 解决方案)
                 float relX = (float) (origin.x - cameraPos.x);
                 float relY = (float) (origin.y - cameraPos.y);
                 float relZ = (float) (origin.z - cameraPos.z);
 
-                // Calculate partial ticks for this animation instance
-                // We use Math.ceil because particle states store (Prev, Current).
-                // Frame N contains the transition from N-1 to N.
-                // So if time is 10.5 (between 10 and 11), we need Frame 11 to interpolate.
+                // 计算插值系数
                 double now = ReplayModUtil.getCurrentAnimationTime();
                 double start = instance.startSeconds;
                 double elapsed = now - start;
                 double currentFrameFloat = elapsed * instance.targetFps;
 
-                // Partial ticks relative to the *currently held* frame
-                // (instance.renderedFrames)
-                // Frame K covers time range (K-1.0) to (K.0).
-                // basis time = K - 1.0
                 float partialTicks = (float) (currentFrameFloat - (instance.renderedFrames - 1));
-
-                // Clamp for safety.
-                // If we are lagging (have Frame 10 but time is 10.5), ticks = 10.5 - 9 = 1.5 ->
-                // clamp to 1.0 (Show Frame 10 fully)
-                // If we are ahead (have Frame 11 but time is 9.5), ticks = 9.5 - 10 = -0.5 ->
-                // clamp to 0.0 (Show Frame 11 start / Frame 10 end)
                 if (partialTicks < 0)
                     partialTicks = 0;
                 if (partialTicks > 1)
                     partialTicks = 1;
 
-                // 使用智能渲染
+                // 使用 GPU 渲染器绘制
+                // 原版模式：传入 bindFramebuffer=true
                 GpuParticleRenderer.render(
-                        readBuffer, // 传入切片副本
+                        readBuffer,
                         particleCount,
-                        modelViewMatrix, // 传入去掉了平移的矩阵
+                        modelViewMatrix,
                         projMatrix,
                         cameraRight,
                         cameraUp,
                         relX,
                         relY,
                         relZ,
-                        partialTicks); // Pass partial ticks here
+                        partialTicks,
+                        true); // 原版模式绑定 MC 主 FBO
             }
         }
 
         currentParticleCount = totalParticles;
+
+        // 更新性能统计
+        PerformanceStats stats = PerformanceStats.getInstance();
+        stats.setParticleCount(totalParticles);
+        stats.setInstanceCount(renderList.size());
+        stats.endFrame();
     }
 
     /**

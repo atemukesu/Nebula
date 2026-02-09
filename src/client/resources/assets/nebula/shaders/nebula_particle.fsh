@@ -9,6 +9,7 @@ flat in float vBloomFactor;   // 接收顶点传入的亮度 (逐粒子 Bloom �
 uniform sampler2DArray Sampler0;
 uniform int UseTexture;
 uniform float EmissiveStrength; // 发光强度 (0.0 - 2.0+)
+uniform int IrisMRT;
 uniform int uRenderPass; // 0=Opaque, 1=Translucent, 2=All
 
 // === 输出 ===

@@ -39,7 +39,8 @@
 		"java": ">=17",
 		"fabric-api": "*",
 		"modmenu": "*",
-		"threatengl": "*"
+		"threatengl": "*",
+		"yet-another-config-lib": "*"
 	},
 	"suggests": {}
 }

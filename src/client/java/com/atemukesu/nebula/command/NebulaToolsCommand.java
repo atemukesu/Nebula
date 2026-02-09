@@ -10,10 +10,8 @@ import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.command.CommandRegistryAccess;
 import net.minecraft.text.Text;
+import net.minecraft.util.Formatting;
 
-/**
- * Nebula Tools 客户端命令注册
- */
 public class NebulaToolsCommand {
 
     public static void register() {
@@ -26,32 +24,37 @@ public class NebulaToolsCommand {
 
         dispatcher.register(
                 ClientCommandManager.literal("nebula_client")
-                        .executes(context -> {
-                            // 默认行为：切换 HUD 显示状态
-                            ModConfig config = ModConfig.getInstance();
-                            boolean newState = !config.getShowDebugHud();
-                            config.setShowDebugHud(newState);
+                        // 1. HUD 命令分支
+                        .then(ClientCommandManager.literal("hud")
+                                .executes(context -> {
+                                    ModConfig config = ModConfig.getInstance();
+                                    boolean newState = !config.getShowDebugHud();
 
-                            // 更新 PerformanceStats 状态
-                            PerformanceStats.getInstance().setEnabled(newState);
+                                    config.setShowDebugHud(newState);
+                                    // 【重要】如果 config 类没有自动保存功能，这里记得手动调用 save()
+                                    // config.save();
 
-                            // 发送反馈
-                            String statusKey = newState ? "gui.nebula.config.on" : "gui.nebula.config.off";
-                            context.getSource().sendFeedback(
-                                    Text.translatable("gui.nebula.config.show_debug_hud")
-                                            .append(": ")
-                                            .append(Text.translatable(statusKey)
-                                                    .formatted(newState ? net.minecraft.util.Formatting.GREEN
-                                                            : net.minecraft.util.Formatting.RED)));
-                            return 1;
-                        })
+                                    PerformanceStats.getInstance().setEnabled(newState);
+
+                                    String statusKey = newState ? "gui.nebula.config.on" : "gui.nebula.config.off";
+                                    Formatting color = newState ? Formatting.GREEN : Formatting.RED;
+
+                                    context.getSource().sendFeedback(
+                                            Text.translatable("gui.nebula.config.show_debug_hud")
+                                                    .append(": ")
+                                                    .append(Text.translatable(statusKey).formatted(color)));
+                                    return 1;
+                                }))
+                        // 2. Settings 命令分支
                         .then(ClientCommandManager.literal("settings")
                                 .executes(context -> {
-                                    // 打开设置界面
+                                    // 获取当前命令执行时的屏幕（通常是 ChatScreen）
+                                    net.minecraft.client.gui.screen.Screen parent = MinecraftClient
+                                            .getInstance().currentScreen;
+
                                     MinecraftClient.getInstance().execute(() -> {
                                         MinecraftClient.getInstance().setScreen(
-                                                NebulaYACLConfig.createConfigScreen(
-                                                        MinecraftClient.getInstance().currentScreen));
+                                                NebulaYACLConfig.createConfigScreen(parent));
                                     });
                                     return 1;
                                 })));

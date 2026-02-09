@@ -7,7 +7,6 @@ import com.atemukesu.nebula.Nebula;
 import com.mojang.blaze3d.platform.GlStateManager;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.texture.SpriteAtlasTexture;
 import net.minecraft.util.Identifier;
 import org.joml.Matrix4f;
 import org.lwjgl.BufferUtils;
@@ -241,6 +240,15 @@ public class GpuParticleRenderer {
         uPartialTicks = GL20.glGetUniformLocation(shaderProgram, "PartialTicks");
         uEmissiveStrength = GL20.glGetUniformLocation(shaderProgram, "EmissiveStrength");
         uIrisMRT = GL20.glGetUniformLocation(shaderProgram, "IrisMRT");
+        uRenderPass = GL20.glGetUniformLocation(shaderProgram, "uRenderPass");
+
+        // 调试日志 - 帮助排查 uniform 问题
+        Nebula.LOGGER.info("[GpuParticleRenderer] Particle shader uniforms:");
+        Nebula.LOGGER.info("  ModelViewMat={}, ProjMat={}", uModelViewMat, uProjMat);
+        Nebula.LOGGER.info("  CameraRight={}, CameraUp={}, Origin={}", uCameraRight, uCameraUp, uOrigin);
+        Nebula.LOGGER.info("  Sampler0={}, UseTexture={}", uSampler0, uUseTexture);
+        Nebula.LOGGER.info("  PartialTicks={}, EmissiveStrength={}", uPartialTicks, uEmissiveStrength);
+        Nebula.LOGGER.info("  IrisMRT={}, RenderPass={}", uIrisMRT, uRenderPass);
     }
 
     /**
@@ -250,7 +258,6 @@ public class GpuParticleRenderer {
      *                        在 Iris 环境下应传入 false，保持 Iris 的渲染目标。
      *                        在原版环境下应传入 true。
      */
-    @SuppressWarnings("deprecation")
     public static void renderInstanced(ByteBuffer data, int particleCount,
             Matrix4f modelViewMatrix, Matrix4f projMatrix,
             float[] cameraRight, float[] cameraUp,
@@ -315,9 +322,14 @@ public class GpuParticleRenderer {
         // Upload Common Uniforms
         uploadMatrix(uModelViewMat, modelViewMatrix);
         uploadMatrix(uProjMat, projMatrix);
-        GL20.glUniform3f(uCameraRight, cameraRight[0], cameraRight[1], cameraRight[2]);
-        GL20.glUniform3f(uCameraUp, cameraUp[0], cameraUp[1], cameraUp[2]);
-        GL20.glUniform3f(uOrigin, originX, originY, originZ);
+
+        // uniform 有效性检查
+        if (uCameraRight != -1)
+            GL20.glUniform3f(uCameraRight, cameraRight[0], cameraRight[1], cameraRight[2]);
+        if (uCameraUp != -1)
+            GL20.glUniform3f(uCameraUp, cameraUp[0], cameraUp[1], cameraUp[2]);
+        if (uOrigin != -1)
+            GL20.glUniform3f(uOrigin, originX, originY, originZ);
         if (uPartialTicks != -1)
             GL20.glUniform1f(uPartialTicks, partialTicks);
         if (uEmissiveStrength != -1)
@@ -328,13 +340,14 @@ public class GpuParticleRenderer {
         // 纹理设置
         if (useTexture && ParticleTextureManager.isInitialized()) {
             ParticleTextureManager.bind(0);
-            GL20.glUniform1i(uSampler0, 0);
-            GL20.glUniform1i(uUseTexture, 1);
+            if (uSampler0 != -1)
+                GL20.glUniform1i(uSampler0, 0);
+            if (uUseTexture != -1)
+                GL20.glUniform1i(uUseTexture, 1);
         } else {
-            GL20.glUniform1i(uUseTexture, 0);
+            if (uUseTexture != -1)
+                GL20.glUniform1i(uUseTexture, 0);
         }
-
-        // --- 渲染逻辑分支 ---
 
         // --- 渲染逻辑分支 ---
 
@@ -390,11 +403,13 @@ public class GpuParticleRenderer {
             // 绑定纹理
             GL13.glActiveTexture(GL13.GL_TEXTURE0);
             GL11.glBindTexture(GL11.GL_TEXTURE_2D, oitFbo.getAccumTexture());
-            GL20.glUniform1i(uOitAccum, 0);
+            if (uOitAccum != -1)
+                GL20.glUniform1i(uOitAccum, 0);
 
             GL13.glActiveTexture(GL13.GL_TEXTURE1);
             GL11.glBindTexture(GL11.GL_TEXTURE_2D, oitFbo.getRevealTexture());
-            GL20.glUniform1i(uOitReveal, 1);
+            if (uOitReveal != -1)
+                GL20.glUniform1i(uOitReveal, 1);
 
             // 绘制全屏四边形 (使用 Quad VBO)
             // 注意：这里的 VAO 仍然是粒子的 VAO，但只要它有 Position (0) 属性且 Quad VBO 有数据即可
@@ -417,7 +432,7 @@ public class GpuParticleRenderer {
             GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
         }
 
-        // 收集性能数据到 PerformanceStats (略微简化，只统计最后一次 Draw 的状态)
+        // 收集性能数据到 PerformanceStats
         PerformanceStats stats = PerformanceStats.getInstance();
         stats.setShaderProgram(shaderProgram);
         stats.setVao(vao);
@@ -457,7 +472,7 @@ public class GpuParticleRenderer {
         RenderSystem.depthMask(true);
         RenderSystem.enableCull();
 
-        // 3. 【核心修复】正确重置 Shader
+        // 3. 正确重置 Shader
         // 不要只调用 glUseProgram(0)，必须通知 RenderSystem 我们清理了 Shader
         // 否则 MC 以为 Shader 还是它的，直接 setUniform 就会报错崩溃
         GL20.glUseProgram(0);

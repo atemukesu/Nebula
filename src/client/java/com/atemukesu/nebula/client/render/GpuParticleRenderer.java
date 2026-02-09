@@ -1,6 +1,6 @@
 package com.atemukesu.nebula.client.render;
 
-import com.atemukesu.NebulaTools.stats.PerformanceStats;
+import com.atemukesu.nebula.client.gui.tools.PerformanceStats;
 import com.atemukesu.nebula.Nebula;
 import com.mojang.blaze3d.platform.GlStateManager;
 import com.mojang.blaze3d.systems.RenderSystem;

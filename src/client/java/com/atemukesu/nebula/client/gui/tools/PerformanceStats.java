@@ -1,4 +1,4 @@
-package com.atemukesu.NebulaTools.stats;
+package com.atemukesu.nebula.client.gui.tools;
 
 import net.minecraft.client.MinecraftClient;
 

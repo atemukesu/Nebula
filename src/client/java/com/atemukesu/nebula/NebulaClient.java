@@ -1,6 +1,6 @@
 package com.atemukesu.nebula;
 
-import com.atemukesu.NebulaTools.NebulaToolsCommand;
+import com.atemukesu.nebula.command.NebulaToolsCommand;
 import com.atemukesu.nebula.client.ClientAnimationManager;
 import com.atemukesu.nebula.client.DebugHud;
 import com.atemukesu.nebula.client.loader.ClientAnimationLoader;

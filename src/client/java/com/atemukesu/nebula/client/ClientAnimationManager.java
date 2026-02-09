@@ -1,6 +1,6 @@
 package com.atemukesu.nebula.client;
 
-import com.atemukesu.NebulaTools.stats.PerformanceStats;
+import com.atemukesu.nebula.client.gui.tools.PerformanceStats;
 import com.atemukesu.nebula.Nebula;
 import com.atemukesu.nebula.client.loader.NblStreamer;
 import com.atemukesu.nebula.client.render.AnimationFrame;

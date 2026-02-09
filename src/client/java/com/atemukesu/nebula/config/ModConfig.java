@@ -10,6 +10,9 @@ public class ModConfig {
     private boolean showPerformanceStats;
     private boolean showCharts;
 
+    // 渲染选项
+    private BlendMode blendMode;
+
     public ModConfig() {
         // 默认在游戏内渲染粒子
         this.renderInGame = true;
@@ -17,6 +20,8 @@ public class ModConfig {
         this.showDebugHud = false;
         this.showPerformanceStats = true;
         this.showCharts = true;
+        // 默认使用加法混合
+        this.blendMode = BlendMode.ADDITIVE;
     }
 
     public static ModConfig getInstance() {
@@ -60,5 +65,19 @@ public class ModConfig {
 
     public void setShowCharts(boolean show) {
         this.showCharts = show;
+    }
+
+    /**
+     * 获取粒子混合模式
+     */
+    public BlendMode getBlendMode() {
+        return this.blendMode;
+    }
+
+    /**
+     * 设置粒子混合模式
+     */
+    public void setBlendMode(BlendMode blendMode) {
+        this.blendMode = blendMode;
     }
 }

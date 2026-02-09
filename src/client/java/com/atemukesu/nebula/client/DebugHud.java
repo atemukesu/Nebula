@@ -90,6 +90,12 @@ public class DebugHud {
         }
     }
 
+    /**
+     * 更新缓存
+     * 
+     * @param stats  统计
+     * @param config 配置
+     */
     private static void updateCaches(PerformanceStats stats, ModConfig config) {
         // --- 1. 更新文本缓存 ---
         cachedLines.clear();
@@ -99,10 +105,6 @@ public class DebugHud {
                 String.format("Nebula %s | FPS: %.0f", Nebula.MOD_VERSION, stats.getCurrentFps()), TEXT_COLOR));
 
         if (config.getShowPerformanceStats()) {
-            // Space
-            // cachedLines.add(new CachedLine("", TEXT_COLOR));
-
-            // Basic Info
             cachedLines.add(new CachedLine(
                     String.format("Particles: %,d | Instances: %d", stats.getParticleCount(), stats.getInstanceCount()),
                     0xAAAAFF));
@@ -118,24 +120,24 @@ public class DebugHud {
                     String.format("Mode: %s | GL Err: 0x%X", stats.isIrisMode() ? "Iris" : "Standard", err),
                     err == 0 ? 0xFFFFFF : 0xFF5555));
 
-            // Detailed Debug Info (User Request)
-            cachedLines.add(new CachedLine("----------------", 0x888888));
+            // 显示当前混合模式
+            String blendModeStr = config.getBlendMode().name();
+            cachedLines.add(new CachedLine(
+                    String.format("Blend: %s", blendModeStr),
+                    0xFFAA55));
+
             cachedLines.add(new CachedLine(
                     String.format("Shader program: %d (ours: %d)", stats.getShaderProgram(), stats.getShaderProgram()),
                     0xCCCCCC));
             cachedLines.add(new CachedLine(String.format("VAO: %d", stats.getVao()), 0xCCCCCC));
             cachedLines.add(new CachedLine(
                     String.format("SSBO: %d, size: %d bytes", stats.getSsbo(), stats.getUsedBufferBytes()), 0xCCCCCC));
-            cachedLines.add(new CachedLine(String.format("Particle count: %d", stats.getParticleCount()), 0xCCCCCC));
             cachedLines.add(new CachedLine(String.format("Origin: (%.2f, %.2f, %.2f)", stats.getOriginX(),
                     stats.getOriginY(), stats.getOriginZ()), 0xCCCCCC));
             cachedLines.add(new CachedLine(String.format("bindFramebuffer: %b", stats.shouldBindFramebuffer()),
                     stats.shouldBindFramebuffer() ? 0xAAFFAA : 0xFFAAAA));
         }
 
-        // --- 2. 更新图表缓存 ---
-        // 即使 Charts 选项关闭，我们也更新缓存，以免切回来时显示过期数据（或者只在需要时更新？）
-        // 无论如何，update 开销很低，统一更新比较安全
         if (config.getShowCharts()) {
             particlesCache.update(stats.getParticleCountHistory(), 1.0);
             renderTimeCache.update(stats.getRenderTimeHistory(), 1.0);

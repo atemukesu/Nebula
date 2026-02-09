@@ -51,6 +51,7 @@ public class NebulaWorldRendererMixin {
         @Unique
         private static boolean hasLoggedStandardPath = false;
 
+        // TODO: 调整注入时机，在 copyPreTranslucentDepth() 之前渲染
         @Inject(method = "render", at = @At(value = "INVOKE",
                         // 目标：net.minecraft.client.particle.ParticleManager.renderParticles(...)
                         target = "Lnet/minecraft/client/particle/ParticleManager;renderParticles(Lnet/minecraft/client/util/math/MatrixStack;Lnet/minecraft/client/render/VertexConsumerProvider$Immediate;Lnet/minecraft/client/render/LightmapTextureManager;Lnet/minecraft/client/render/Camera;F)V"))

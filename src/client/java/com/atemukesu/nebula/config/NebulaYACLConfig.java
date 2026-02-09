@@ -2,6 +2,7 @@ package com.atemukesu.nebula.config;
 
 import dev.isxander.yacl3.api.*;
 import dev.isxander.yacl3.api.controller.BooleanControllerBuilder;
+import dev.isxander.yacl3.api.controller.EnumControllerBuilder;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.text.Text;
 
@@ -53,6 +54,22 @@ public class NebulaYACLConfig {
                                                                 .binding(true, config::getShowCharts,
                                                                                 config::setShowCharts)
                                                                 .controller(BooleanControllerBuilder::create)
+                                                                .build())
+                                                .build())
+                                .category(ConfigCategory.createBuilder()
+                                                .name(Text.translatable("gui.nebula.config.category.rendering"))
+                                                .option(Option.<BlendMode>createBuilder()
+                                                                .name(Text.translatable("gui.nebula.config.blend_mode"))
+                                                                .description(OptionDescription.of(Text.translatable(
+                                                                                "gui.nebula.config.blend_mode.desc")))
+                                                                .binding(
+                                                                                BlendMode.ADDITIVE,
+                                                                                config::getBlendMode,
+                                                                                config::setBlendMode)
+                                                                .controller(opt -> EnumControllerBuilder.create(opt)
+                                                                                .enumClass(BlendMode.class)
+                                                                                .formatValue(mode -> Text.translatable(
+                                                                                                mode.getTranslationKey())))
                                                                 .build())
                                                 .build())
                                 .save(ConfigManager::saveConfig)

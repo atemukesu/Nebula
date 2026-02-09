@@ -1,6 +1,8 @@
 package com.atemukesu.nebula.client.render;
 
 import com.atemukesu.nebula.client.gui.tools.PerformanceStats;
+import com.atemukesu.nebula.config.BlendMode;
+import com.atemukesu.nebula.config.ModConfig;
 import com.atemukesu.nebula.Nebula;
 import com.mojang.blaze3d.platform.GlStateManager;
 import com.mojang.blaze3d.systems.RenderSystem;
@@ -41,10 +43,18 @@ public class GpuParticleRenderer {
     private static final Identifier VERTEX_SHADER_ID = new Identifier(Nebula.MOD_ID, "shaders/nebula_particle.vsh");
     private static final Identifier FRAGMENT_SHADER_ID = new Identifier(Nebula.MOD_ID, "shaders/nebula_particle.fsh");
 
+    // OIT Shader
+    private static final Identifier OIT_VSH_ID = new Identifier(Nebula.MOD_ID, "shaders/oit_composite.vsh");
+    private static final Identifier OIT_FSH_ID = new Identifier(Nebula.MOD_ID, "shaders/oit_composite.fsh");
+
     // OpenGL 对象句柄
     private static int vao = -1;
     private static int quadVbo = -1;
     private static int shaderProgram = -1;
+
+    // OIT 相关对象
+    private static OitFramebuffer oitFbo;
+    private static int oitProgram = -1;
 
     private static boolean initialized = false;
     private static boolean shaderCompiled = false;
@@ -60,6 +70,11 @@ public class GpuParticleRenderer {
     private static int uPartialTicks = -1;
     private static int uEmissiveStrength = -1;
     private static int uIrisMRT = -1;
+    private static int uRenderPass = -1;
+
+    // OIT Composite Uniforms
+    private static int uOitAccum = -1;
+    private static int uOitReveal = -1;
 
     // 发光强度
     private static float emissiveStrength = 1.0f;
@@ -114,6 +129,18 @@ public class GpuParticleRenderer {
                 shaderCompiled = true;
                 resolveUniforms();
             }
+
+            // 1.1 编译 OIT Shader
+            oitProgram = createShaderProgram(OIT_VSH_ID, OIT_FSH_ID);
+            if (oitProgram > 0) {
+                uOitAccum = GL20.glGetUniformLocation(oitProgram, "uAccumTexture");
+                uOitReveal = GL20.glGetUniformLocation(oitProgram, "uRevealTexture");
+            } else {
+                Nebula.LOGGER.error("[GpuParticleRenderer] Failed to compile OIT shader");
+            }
+
+            // 1.2 初始化 OIT FBO
+            oitFbo = new OitFramebuffer();
 
             // 2. 创建 VAO (仅用于绘制 Quad)
             vao = GL30.glGenVertexArrays();
@@ -256,27 +283,28 @@ public class GpuParticleRenderer {
         GL11.glGetIntegerv(GL11.GL_VIEWPORT, viewport);
 
         // 【Iris 兼容】只有在非 Iris 模式下，才强制绑定 MC 主 Framebuffer
-        // 在 Iris 环境下，Iris 已经绑定了它的 G-Buffer 或 Translucent Buffer
-        // 绑定 MC 主 FBO 会覆盖 Iris 的渲染目标，导致粒子不可见
         if (bindFramebuffer) {
             MinecraftClient.getInstance().getFramebuffer().beginWrite(false);
         }
 
+        // 获取当前绑定的 Framebuffer ID (无论是 MC 的还是 Iris 的)
+        int targetFboId = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
+
         // 渲染状态设置
         RenderSystem.disableCull();
-        RenderSystem.enableBlend();
-
-        // 统一使用标准混合，避免重叠粒子过白
-        // 加法混合会导致重叠区域亮度累加，看起来很白
-        RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
-
         RenderSystem.enableDepthTest();
         RenderSystem.depthFunc(GL11.GL_LEQUAL);
-        RenderSystem.depthMask(false);
 
+        BlendMode blendMode = ModConfig.getInstance().getBlendMode();
+
+        // 绑定 SSBO 到 Binding Point 0
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, SSBO_BINDING_INDEX, ssbo);
+        GL30.glBindVertexArray(vao); // 绑定粒子 VAO
+
+        // 使用粒子 Shader
         GL20.glUseProgram(shaderProgram);
 
-        // Upload Uniforms
+        // Upload Common Uniforms
         uploadMatrix(uModelViewMat, modelViewMatrix);
         uploadMatrix(uProjMat, projMatrix);
         GL20.glUniform3f(uCameraRight, cameraRight[0], cameraRight[1], cameraRight[2]);
@@ -286,7 +314,6 @@ public class GpuParticleRenderer {
             GL20.glUniform1f(uPartialTicks, partialTicks);
         if (uEmissiveStrength != -1)
             GL20.glUniform1f(uEmissiveStrength, emissiveStrength);
-        // 设置 IrisMRT: bindFramebuffer=false 表示 Iris 模式，启用 MRT
         if (uIrisMRT != -1)
             GL20.glUniform1i(uIrisMRT, bindFramebuffer ? 0 : 1);
 
@@ -299,10 +326,85 @@ public class GpuParticleRenderer {
             GL20.glUniform1i(uUseTexture, 0);
         }
 
-        // 绑定 SSBO 到 Binding Point 0
-        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, SSBO_BINDING_INDEX, ssbo);
+        // --- 渲染逻辑分支 ---
 
-        // 收集性能数据到 PerformanceStats
+        if (blendMode == BlendMode.OIT && oitFbo != null && oitProgram > 0) {
+            // ==========================================
+            // Pass 1: 不透明粒子 (Opaque)
+            // 目标: 主 FBO (Iris/MC)
+            // ==========================================
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, targetFboId);
+            if (uRenderPass != -1)
+                GL20.glUniform1i(uRenderPass, 0); // Opaque Pass
+
+            RenderSystem.depthMask(true);
+            RenderSystem.disableBlend();
+            // 绘制实体粒子
+            GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
+
+            // ==========================================
+            // Pass 2: 半透明粒子 (Translucent)
+            // 目标: OIT FBO
+            // ==========================================
+            oitFbo.resize(viewport[2], viewport[3]);
+            oitFbo.bindAndShareDepth(targetFboId);
+            oitFbo.clear(); // Clear Accum(0) & Reveal(1)
+
+            // 保持使用 粒子 Shader (shaderProgram)
+            if (uRenderPass != -1)
+                GL20.glUniform1i(uRenderPass, 1); // Translucent Pass
+
+            RenderSystem.depthMask(false); // OIT 核心：不写深度
+            RenderSystem.enableBlend();
+            // OIT 专用混合模式 (Requires GL 4.0+)
+            GL40.glBlendFunci(0, GL11.GL_ONE, GL11.GL_ONE); // Accum
+            GL40.glBlendFunci(1, GL11.GL_ZERO, GL11.GL_ONE_MINUS_SRC_COLOR); // Reveal
+
+            // 绘制半透明粒子 (Instanced)
+            GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
+
+            // ==========================================
+            // Pass 3: 全屏合成 (Composite)
+            // 目标: 主 FBO (Iris/MC)
+            // ==========================================
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, targetFboId);
+
+            // 切换到 合成 Shader
+            GL20.glUseProgram(oitProgram);
+
+            // 恢复状态用于合成
+            RenderSystem.depthMask(false); // 合成时不写深度，只贴颜色
+            RenderSystem.enableBlend();
+            RenderSystem.blendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA); // 标准混合把结果贴上去
+
+            // 绑定纹理
+            GL13.glActiveTexture(GL13.GL_TEXTURE0);
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, oitFbo.getAccumTexture());
+            GL20.glUniform1i(uOitAccum, 0);
+
+            GL13.glActiveTexture(GL13.GL_TEXTURE1);
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, oitFbo.getRevealTexture());
+            GL20.glUniform1i(uOitReveal, 1);
+
+            // 绘制全屏四边形 (使用 Quad VBO)
+            // 注意：这里的 VAO 仍然是粒子的 VAO，但只要它有 Position (0) 属性且 Quad VBO 有数据即可
+            GL31.glDrawArrays(GL11.GL_TRIANGLE_FAN, 0, 4);
+
+        } else {
+            // === 传统渲染路径 (Single Pass) ===
+            // 根据配置应用混合模式
+            applyBlendMode(blendMode);
+
+            // 确保 RenderPass 为默认 (全部绘制 或 忽略)
+            // 如果 Shader 里有 RenderPass 逻辑，我们需要设一个能通过所有粒子的值，或者 Shader 默认处理
+            // 这里为了安全，假设普通模式不区分 Pass
+            if (uRenderPass != -1)
+                GL20.glUniform1i(uRenderPass, 2); // 2 = All
+
+            GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
+        }
+
+        // 收集性能数据到 PerformanceStats (略微简化，只统计最后一次 Draw 的状态)
         PerformanceStats stats = PerformanceStats.getInstance();
         stats.setShaderProgram(shaderProgram);
         stats.setVao(vao);
@@ -314,65 +416,32 @@ public class GpuParticleRenderer {
         stats.setIrisMode(!bindFramebuffer);
         stats.setOrigin(originX, originY, originZ);
         stats.setShouldBindFramebuffer(bindFramebuffer);
+        stats.setLastGlError(GL11.glGetError(), "Post-render"); // 简单检查错误
 
-        // 检查 GL 错误
-        int preError = GL11.glGetError();
-        if (preError != GL11.GL_NO_ERROR) {
-            stats.setLastGlError(preError, "Pre-draw error");
-        }
-
-        // === Draw Call ===
-        long drawStart = System.nanoTime();
-        GL30.glBindVertexArray(vao);
-        GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
-        GL30.glBindVertexArray(0);
-        double drawTimeMs = (System.nanoTime() - drawStart) / 1_000_000.0;
-        stats.setDrawCallTimeMs(drawTimeMs);
-
-        // 检查 Draw Call 后的 GL 错误
-        int postError = GL11.glGetError();
-        if (postError != GL11.GL_NO_ERROR) {
-            stats.setLastGlError(postError, "Post-draw error");
-        } else if (preError == GL11.GL_NO_ERROR) {
-            stats.setLastGlError(0, "");
-        }
-
-        // 对于 PMB 模式，在 draw 之后设置 fence
+        // PMB Fence Logic
         if (!useFallback) {
-            // 删除旧 fence
             if (fences[currentBufferIndex] != 0) {
                 GL32.glDeleteSync(fences[currentBufferIndex]);
             }
-            // 设置新 fence，标记 GPU 开始使用这个缓冲区
             fences[currentBufferIndex] = GL32.glFenceSync(GL32.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-            // 切换到下一个缓冲区
             currentBufferIndex = (currentBufferIndex + 1) % BUFFER_COUNT;
         }
 
         // === 状态恢复 ===
+        GL30.glBindVertexArray(0);
         ParticleTextureManager.unbind();
         RenderSystem.activeTexture(GL13.GL_TEXTURE0);
 
-        // 使用 glUseProgram(0) 仅解绑我们的 Shader Program
-        // 不要调用 RenderSystem.setShader(null)，这会破坏 Iris 的管线
-        // Iris 的 Mixin 会在渲染完成后恢复 Iris 的 Shader
         GL20.glUseProgram(0);
-
         RenderSystem.defaultBlendFunc();
         RenderSystem.depthMask(true);
         RenderSystem.depthFunc(GL11.GL_LEQUAL);
         RenderSystem.enableDepthTest();
         RenderSystem.enableCull();
 
-        // [FIX] 不要禁用混合！
-        // 我们的 Mixin 注入在 ParticleManager.renderParticles() 之前
-        // 如果禁用混合，会影响后续 MC 原版粒子的渲染
-        // MC 的粒子也需要混合开启
         if (bindFramebuffer) {
-            // 原版环境：恢复纹理，但保持混合开启
             RenderSystem.setShaderTexture(0, SpriteAtlasTexture.BLOCK_ATLAS_TEXTURE);
         }
-        // Iris 环境：保持 Iris 状态不变
 
         GL11.glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
     }
@@ -477,6 +546,49 @@ public class GpuParticleRenderer {
     }
 
     /**
+     * 根据混合模式配置应用不同的 OpenGL 混合状态
+     * 
+     * @param blendMode 混合模式
+     */
+    private static void applyBlendMode(BlendMode blendMode) {
+        switch (blendMode) {
+            case ADDITIVE:
+                // 加法混合：粒子自带发光效果，重叠区域亮度累加
+                // 适合火焰、光束等发光粒子
+                RenderSystem.enableBlend();
+                RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE);
+                RenderSystem.depthMask(false); // 透明粒子不写深度
+                break;
+
+            case ALPHA:
+                // 标准 Alpha 混合：颜色准确，适合不透明/半透明粒子
+                // 需要正确的渲染顺序
+                RenderSystem.enableBlend();
+                RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA,
+                        GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
+                RenderSystem.depthMask(false); // 透明粒子不写深度
+                break;
+
+            case OIT:
+                // OIT (Order Independent Transparency)
+                // 注意：正常的 OIT 渲染逻辑在 renderInstanced 的专用 Pass 中处理
+                // 如果代码运行到这里，说明 OIT 资源初始化失败或被禁用，回退到标准 Alpha 混合
+                RenderSystem.enableBlend();
+                RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA,
+                        GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
+                RenderSystem.depthMask(false);
+                break;
+
+            default:
+                // 默认使用加法混合
+                RenderSystem.enableBlend();
+                RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE);
+                RenderSystem.depthMask(false);
+                break;
+        }
+    }
+
+    /**
      * 渲染粒子（默认绑定 MC 主 Framebuffer，用于原版渲染路径）
      */
     public static void render(ByteBuffer data, int particleCount,
@@ -565,13 +677,22 @@ public class GpuParticleRenderer {
     }
 
     /**
-     * 创建 Shader 程序
-     * 
-     * @return Shader 程序句柄
+     * 创建 Shader 程序 (使用默认粒子 Shader)
      */
     private static int createShaderProgram() {
-        String vertexSource = loadShaderSource(VERTEX_SHADER_ID);
-        String fragmentSource = loadShaderSource(FRAGMENT_SHADER_ID);
+        return createShaderProgram(VERTEX_SHADER_ID, FRAGMENT_SHADER_ID);
+    }
+
+    /**
+     * 创建 Shader 程序
+     * 
+     * @param vshId 顶点着色器 ID
+     * @param fshId 片元着色器 ID
+     * @return Shader 程序句柄
+     */
+    private static int createShaderProgram(Identifier vshId, Identifier fshId) {
+        String vertexSource = loadShaderSource(vshId);
+        String fragmentSource = loadShaderSource(fshId);
         if (vertexSource == null || fragmentSource == null)
             return -1;
         int vertexShader = 0, fragmentShader = 0, program = 0;
@@ -581,7 +702,7 @@ public class GpuParticleRenderer {
             GL20.glCompileShader(vertexShader);
 
             if (GL20.glGetShaderi(vertexShader, GL20.GL_COMPILE_STATUS) == GL11.GL_FALSE) {
-                Nebula.LOGGER.error("[GpuParticleRenderer] Vertex shader compile error: {}",
+                Nebula.LOGGER.error("[GpuParticleRenderer] Vertex shader compile error ({}): {}", vshId,
                         GL20.glGetShaderInfoLog(vertexShader));
             }
 
@@ -590,7 +711,7 @@ public class GpuParticleRenderer {
             GL20.glCompileShader(fragmentShader);
 
             if (GL20.glGetShaderi(fragmentShader, GL20.GL_COMPILE_STATUS) == GL11.GL_FALSE) {
-                Nebula.LOGGER.error("[GpuParticleRenderer] Fragment shader compile error: {}",
+                Nebula.LOGGER.error("[GpuParticleRenderer] Fragment shader compile error ({}): {}", fshId,
                         GL20.glGetShaderInfoLog(fragmentShader));
             }
 

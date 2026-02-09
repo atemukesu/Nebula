@@ -25,12 +25,14 @@ layout(std430, binding = 0) buffer ParticleBuffer {
 };
 
 // Uniforms
+// Uniforms
 uniform mat4 ModelViewMat;
 uniform mat4 ProjMat;
 uniform vec3 CameraRight;
 uniform vec3 CameraUp;
 uniform vec3 Origin;
 uniform float PartialTicks;
+uniform int uRenderPass; // 0=Opaque, 1=Translucent, 2=All
 
 // Outputs
 out vec4 vColor;
@@ -42,6 +44,22 @@ flat out float vBloomFactor;   // 逐粒子的 Bloom 亮度因子 (传递给片�
 void main() {
     // 通过 InstanceID 获取粒子数据
     Particle p = particles[gl_InstanceID];
+     
+    // 解包颜色获取 Alpha
+    vec4 color = unpackUnorm4x8(p.colorPacked);
+    float alpha = color.a;
+    
+    // Pass 剔除逻辑
+    // 0: Opaque Pass (只画不透明粒子, alpha > 0.99)
+    if (uRenderPass == 0 && alpha < 0.99) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0); // NDC 剔除 (移出屏幕)
+        return;
+    }
+    // 1: Translucent Pass (只画半透明粒子, alpha <= 0.99)
+    if (uRenderPass == 1 && alpha >= 0.99) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0); // NDC 剔除 (移出屏幕)
+        return;
+    }
     
     // 1. 位置插值 (Linear Interpolation)
     vec3 prevPos = vec3(p.prevX, p.prevY, p.prevZ);
@@ -68,8 +86,5 @@ void main() {
     vUV = UV;
     vTexLayer = p.texLayer;
     
-    // 5. Bloom 因子 - 使用较高的默认值产生明显的 HDR 发光
-    // TODO: 未来可从 Particle 结构的 pad1/pad2/pad3 字段中读取
-    // 例如: vBloomFactor = p.pad1;  // 需要在 Java 端填充该字段
-    vBloomFactor = 2.5;
+    vBloomFactor = 1.5;
 }

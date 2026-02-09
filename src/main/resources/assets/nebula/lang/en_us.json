@@ -5,6 +5,7 @@
     "command.nebula.play.success": "Playing animation '%s' for all players.",
     "gui.nebula.config.title": "Nebula Particle Configuration",
     "gui.nebula.config.category.general": "General Settings",
+    "gui.nebula.config.category.rendering": "Rendering Settings",
     "gui.nebula.config.render_in_game": "Render Particles In-Game",
     "gui.nebula.config.render_in_game.desc": "Control whether particles are rendered during gameplay. When disabled, particle data will not be processed, significantly improving performance.\n\nNote: Even if disabled, particles will still be forcibly rendered when ReplayMod is exporting a video.",
     "gui.nebula.config.show_debug_hud": "Show Debug HUD",
@@ -15,6 +16,11 @@
     "gui.nebula.config.show_stats.desc": "Show detailed performance statistics (FPS, Instance Count, etc.) in the HUD.",
     "gui.nebula.config.show_charts": "Show Performance Charts",
     "gui.nebula.config.show_charts.desc": "Draw real-time performance line charts in the HUD.",
+    "gui.nebula.config.blend_mode": "Particle Blend Mode",
+    "gui.nebula.config.blend_mode.desc": "Set the blending mode for particles.\n\n§6Additive§r: Particles glow naturally, best performance, but overlapping areas become too bright.\n\n§6Alpha§r: Accurate colors, suitable for opaque particles, but transparent particles require sorting.\n\n§6OIT§r: Order Independent Transparency, best quality, no sorting needed, but higher performance cost.",
+    "gui.nebula.config.blend_mode.additive": "Additive Blend",
+    "gui.nebula.config.blend_mode.alpha": "Alpha Blend",
+    "gui.nebula.config.blend_mode.oit": "OIT (Order Independent)",
     "command.nebula.client.reload.success": "Animations reloaded successfully!",
     "command.nebula.client.reload.failed": "Failed to reload animations. See log for details."
 }

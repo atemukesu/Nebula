@@ -5,6 +5,7 @@
     "command.nebula.play.success": "すべてのプレイヤーにアニメーション '%s' を再生しています。",
     "gui.nebula.config.title": "Nebula パーティクル設定",
     "gui.nebula.config.category.general": "一般設定",
+    "gui.nebula.config.category.rendering": "レンダリング設定",
     "gui.nebula.config.render_in_game": "ゲーム内でパーティクルを描画",
     "gui.nebula.config.render_in_game.desc": "ゲームプレイ中にパーティクルを描画するかどうかを制御します。無効にすると、パーティクルデータは処理されなくなり、パフォーマンスが大幅に向上します。\n\n注：このオプションが無効になっていても、ReplayModがビデオをエクスポートしている間は、パーティクルは強制的に描画されます。",
     "gui.nebula.config.show_debug_hud": "デバッグHUDを表示",
@@ -15,6 +16,11 @@
     "gui.nebula.config.show_stats.desc": "HUDに詳細なパフォーマンスデータ（FPS、インスタンス数など）を表示します。",
     "gui.nebula.config.show_charts": "パフォーマンスチャートを表示",
     "gui.nebula.config.show_charts.desc": "HUDにリアルタイムのパフォーマンス折れ線グラフを描画します。",
+    "gui.nebula.config.blend_mode": "パーティクルブレンドモード",
+    "gui.nebula.config.blend_mode.desc": "パーティクルのブレンド方式を設定します。\n\n§6加算ブレンド§r：パーティクルが自然に発光し、最高のパフォーマンス。ただし重なる部分が明るくなりすぎます。\n\n§6アルファブレンド§r：正確な色表現、不透明パーティクルに最適。ただし透明パーティクルはソートが必要です。\n\n§6OIT§r：順序非依存透過。最高の品質、ソート不要。ただしパフォーマンスコストが高い。",
+    "gui.nebula.config.blend_mode.additive": "加算ブレンド",
+    "gui.nebula.config.blend_mode.alpha": "アルファブレンド",
+    "gui.nebula.config.blend_mode.oit": "OIT (順序非依存)",
     "command.nebula.client.reload.success": "アニメーションが正常に再読み込みされました！",
     "command.nebula.client.reload.failed": "アニメーションの再読み込みに失敗しました。詳細はログを確認してください。"
 }

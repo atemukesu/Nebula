@@ -5,6 +5,7 @@
     "command.nebula.play.success": "正在为所有玩家播放动画 '%s'。",
     "gui.nebula.config.title": "Nebula 粒子配置",
     "gui.nebula.config.category.general": "通用设置",
+    "gui.nebula.config.category.rendering": "渲染设置",
     "gui.nebula.config.render_in_game": "游戏内渲染粒子",
     "gui.nebula.config.render_in_game.desc": "控制是否在游戏中渲染粒子。关闭后将不再读取和处理粒子数据，极大提高性能。\n\n注意：即使关闭此选项，当检测到 ReplayMod 正在导出视频时，粒子仍会强制渲染。",
     "gui.nebula.config.show_debug_hud": "显示调试 HUD",
@@ -15,6 +16,11 @@
     "gui.nebula.config.show_stats.desc": "在 HUD 中显示详细的性能数据（FPS、实例数等）。",
     "gui.nebula.config.show_charts": "显示性能图表",
     "gui.nebula.config.show_charts.desc": "在 HUD 中绘制实时性能折线图。",
+    "gui.nebula.config.blend_mode": "粒子混合模式",
+    "gui.nebula.config.blend_mode.desc": "设置粒子的混合渲染方式。\n\n§6加法混合§r：粒子自带发光效果，性能最佳，但重叠区域会过亮。\n\n§6标准混合§r：颜色准确度高，适合不透明粒子，但透明粒子需要排序。\n\n§6OIT§r：与顺序无关的透明度，效果最佳，无需排序，但性能开销较大。",
+    "gui.nebula.config.blend_mode.additive": "加法混合",
+    "gui.nebula.config.blend_mode.alpha": "标准混合",
+    "gui.nebula.config.blend_mode.oit": "OIT (与顺序无关透明度)",
     "command.nebula.client.reload.success": "动画重载成功！",
     "command.nebula.client.reload.failed": "动画重载失败。详情请查看日志。"
 }

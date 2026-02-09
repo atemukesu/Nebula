@@ -48,13 +48,9 @@ public class NebulaToolsCommand {
                         // 2. Settings 命令分支
                         .then(ClientCommandManager.literal("settings")
                                 .executes(context -> {
-                                    // 获取当前命令执行时的屏幕（通常是 ChatScreen）
-                                    net.minecraft.client.gui.screen.Screen parent = MinecraftClient
-                                            .getInstance().currentScreen;
-
                                     MinecraftClient.getInstance().execute(() -> {
                                         MinecraftClient.getInstance().setScreen(
-                                                NebulaYACLConfig.createConfigScreen(parent));
+                                                NebulaYACLConfig.createConfigScreen(null)); // null parent screen
                                     });
                                     return 1;
                                 })));

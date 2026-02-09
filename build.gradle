@@ -55,12 +55,12 @@ dependencies {
 	modImplementation("com.terraformersmc:modmenu:${project.modmenu_version}")
     
     // YACL Dependency
-    modImplementation "dev.isxander:yet-another-config-lib:3.5.0+1.20.1-fabric"
+    modImplementation "dev.isxander:yet-another-config-lib:${project.yacl_version}"
 
 	modCompileOnly "maven.modrinth:replaymod:${project.replaymod_version}"
 
-	implementation "com.github.luben:zstd-jni:1.5.5-5"
-	include "com.github.luben:zstd-jni:1.5.5-5"
+	implementation "com.github.luben:zstd-jni:${project.zstd_version}"
+	include "com.github.luben:zstd-jni:${project.zstd_version}"
 
 }
 

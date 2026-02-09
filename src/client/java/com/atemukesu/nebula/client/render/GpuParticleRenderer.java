@@ -1,6 +1,8 @@
 package com.atemukesu.nebula.client.render;
 
+import com.atemukesu.NebulaTools.stats.PerformanceStats;
 import com.atemukesu.nebula.Nebula;
+import com.mojang.blaze3d.platform.GlStateManager;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.texture.SpriteAtlasTexture;
@@ -62,7 +64,6 @@ public class GpuParticleRenderer {
     // 发光强度
     private static float emissiveStrength = 1.0f;
 
-    // Shader 绑定点 (必须与 shader 中的 binding = 0 一致)
     private static final int SSBO_BINDING_INDEX = 0;
 
     // 临时矩阵缓冲
@@ -83,10 +84,6 @@ public class GpuParticleRenderer {
     private static int lastFrameUsedBytes = 0;
     private static boolean pmbSupported = false;
     private static boolean useFallback = false;
-
-    // 调试日志
-    private static int debugLogCounter = 0;
-    private static final int DEBUG_LOG_INTERVAL = 60;
 
     /**
      * 初始化渲染器
@@ -269,15 +266,9 @@ public class GpuParticleRenderer {
         RenderSystem.disableCull();
         RenderSystem.enableBlend();
 
-        if (bindFramebuffer) {
-            // 原版模式 (bindFramebuffer=true): 使用加法混合模拟发光
-            // 适用于没有 Shader Bloom 的情况
-            GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE);
-        } else {
-            // Iris 模式 (bindFramebuffer=false): 使用标准混合
-            // 避免重叠部分过曝，发光效果由 MRT/Bloom 处理
-            GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
-        }
+        // 统一使用标准混合，避免重叠粒子过白
+        // 加法混合会导致重叠区域亮度累加，看起来很白
+        RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
 
         RenderSystem.enableDepthTest();
         RenderSystem.depthFunc(GL11.GL_LEQUAL);
@@ -311,40 +302,37 @@ public class GpuParticleRenderer {
         // 绑定 SSBO 到 Binding Point 0
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, SSBO_BINDING_INDEX, ssbo);
 
-        // 调试日志
-        debugLogCounter++;
-        boolean shouldLog = (debugLogCounter % DEBUG_LOG_INTERVAL == 1);
+        // 收集性能数据到 PerformanceStats
+        PerformanceStats stats = PerformanceStats.getInstance();
+        stats.setShaderProgram(shaderProgram);
+        stats.setVao(vao);
+        stats.setSsbo(ssbo);
+        stats.setBufferSizeBytes(currentBufferSize);
+        stats.setUsedBufferBytes(lastFrameUsedBytes);
+        stats.setPmbSupported(pmbSupported);
+        stats.setUsingFallback(useFallback);
+        stats.setIrisMode(!bindFramebuffer);
 
-        if (shouldLog) {
-            Nebula.LOGGER.info("[GpuParticleRenderer DEBUG] Pre-draw state:");
-            Nebula.LOGGER.info("  - Shader program: {} (ours: {})", GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM),
-                    shaderProgram);
-            Nebula.LOGGER.info("  - VAO: {}", vao);
-            Nebula.LOGGER.info("  - SSBO: {}, size: {} bytes", ssbo, lastFrameUsedBytes);
-            Nebula.LOGGER.info("  - Particle count: {}", particleCount);
-            Nebula.LOGGER.info("  - Origin: ({}, {}, {})", originX, originY, originZ);
-            Nebula.LOGGER.info("  - bindFramebuffer: {}", bindFramebuffer);
-
-            // 检查 GL 错误
-            int preError = GL11.glGetError();
-            if (preError != GL11.GL_NO_ERROR) {
-                Nebula.LOGGER.warn("  - GL Error before draw: {}", preError);
-            }
+        // 检查 GL 错误
+        int preError = GL11.glGetError();
+        if (preError != GL11.GL_NO_ERROR) {
+            stats.setLastGlError(preError, "Pre-draw error");
         }
 
         // === Draw Call ===
+        long drawStart = System.nanoTime();
         GL30.glBindVertexArray(vao);
         GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
         GL30.glBindVertexArray(0);
+        double drawTimeMs = (System.nanoTime() - drawStart) / 1_000_000.0;
+        stats.setDrawCallTimeMs(drawTimeMs);
 
-        if (shouldLog) {
-            // 检查 Draw Call 后的 GL 错误
-            int postError = GL11.glGetError();
-            if (postError != GL11.GL_NO_ERROR) {
-                Nebula.LOGGER.warn("[GpuParticleRenderer DEBUG] GL Error after draw: {}", postError);
-            } else {
-                Nebula.LOGGER.info("[GpuParticleRenderer DEBUG] Draw call completed successfully");
-            }
+        // 检查 Draw Call 后的 GL 错误
+        int postError = GL11.glGetError();
+        if (postError != GL11.GL_NO_ERROR) {
+            stats.setLastGlError(postError, "Post-draw error");
+        } else if (preError == GL11.GL_NO_ERROR) {
+            stats.setLastGlError(0, "");
         }
 
         // 对于 PMB 模式，在 draw 之后设置 fence
@@ -363,7 +351,7 @@ public class GpuParticleRenderer {
         ParticleTextureManager.unbind();
         RenderSystem.activeTexture(GL13.GL_TEXTURE0);
 
-        // 【Iris 兼容】使用 glUseProgram(0) 仅解绑我们的 Shader Program
+        // 使用 glUseProgram(0) 仅解绑我们的 Shader Program
         // 不要调用 RenderSystem.setShader(null)，这会破坏 Iris 的管线
         // Iris 的 Mixin 会在渲染完成后恢复 Iris 的 Shader
         GL20.glUseProgram(0);
@@ -374,16 +362,15 @@ public class GpuParticleRenderer {
         RenderSystem.enableDepthTest();
         RenderSystem.enableCull();
 
-        // 【Iris 兼容】根据环境决定是否禁用混合
+        // [FIX] 不要禁用混合！
+        // 我们的 Mixin 注入在 ParticleManager.renderParticles() 之前
+        // 如果禁用混合，会影响后续 MC 原版粒子的渲染
+        // MC 的粒子也需要混合开启
         if (bindFramebuffer) {
-            // 原版环境：可以禁用混合和恢复纹理
-            RenderSystem.disableBlend();
+            // 原版环境：恢复纹理，但保持混合开启
             RenderSystem.setShaderTexture(0, SpriteAtlasTexture.BLOCK_ATLAS_TEXTURE);
-            RenderSystem.setShader(() -> null);
-            MinecraftClient.getInstance().getFramebuffer().beginWrite(false);
         }
-        // Iris 环境：不禁用混合，Iris 的半透明阶段需要混合开启
-        // 也不调用 setShader(null)，避免破坏 Iris 状态
+        // Iris 环境：保持 Iris 状态不变
 
         GL11.glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
     }

@@ -1,5 +1,6 @@
 package com.atemukesu.nebula;
 
+import com.atemukesu.NebulaTools.NebulaToolsCommand;
 import com.atemukesu.nebula.client.ClientAnimationManager;
 import com.atemukesu.nebula.client.DebugHud;
 import com.atemukesu.nebula.client.loader.ClientAnimationLoader;
@@ -11,7 +12,6 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 import net.minecraft.util.math.Vec3d;
 
@@ -22,6 +22,9 @@ public class NebulaClient implements ClientModInitializer {
 
         registerS2CPackets();
 
+        // 注册 nebula_gui 命令
+        NebulaToolsCommand.register();
+
         ClientLifecycleEvents.CLIENT_STOPPING.register(client -> {
             ClientAnimationLoader.shutdownExecutor();
         });
@@ -29,11 +32,6 @@ public class NebulaClient implements ClientModInitializer {
         // 负责驱动"常规模式"下的动画更新
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             ClientAnimationManager.getInstance().tick(client);
-        });
-
-        // 负责在渲染时推进帧
-        WorldRenderEvents.LAST.register(context -> {
-            ClientAnimationManager.getInstance().renderTick(context);
         });
 
         DebugHud.register();

@@ -5,7 +5,7 @@
 	"client": [
 		"client.ExampleClientMixin",
 		"client.VideoRendererMixin",
-		"client.MixinIrisPipeline"
+		"client.NebulaWorldRendererMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

@@ -1,5 +1,6 @@
 package com.atemukesu.nebula.client;
 
+import com.atemukesu.NebulaTools.stats.PerformanceStats;
 import com.atemukesu.nebula.Nebula;
 import com.atemukesu.nebula.client.loader.NblStreamer;
 import com.atemukesu.nebula.client.render.AnimationFrame;
@@ -91,6 +92,8 @@ public class ClientAnimationManager {
 
     /**
      * 游戏 Tick 更新（常规模式）
+     * 
+     * @param client Minecraft 客户端实例
      */
     public void tick(MinecraftClient client) {
         // 清理已完成的动画实例
@@ -209,10 +212,140 @@ public class ClientAnimationManager {
     }
 
     /**
-     * 渲染 Tick（每帧调用）
-     * 在 WorldRenderEvents.AFTER_TRANSLUCENT 中调用
+     * 统一的 Mixin 渲染入口（每帧调用）
+     * 由 NebulaWorldRendererMixin 调用，支持 Iris 和普通模式
      * 
-     * 注意：当 Iris Shaders 激活时，渲染由 MixinWorldRenderer 处理，此方法会跳过
+     * @param modelViewMatrix  模型视图矩阵
+     * @param projectionMatrix 投影矩阵
+     * @param camera           相机对象
+     * @param frustum          视锥体（用于剔除）
+     * @param bindFramebuffer  是否绑定 MC 主 Framebuffer
+     *                         普通模式传入 true，Iris 模式传入 false
+     */
+    public void renderTickMixin(Matrix4f modelViewMatrix, Matrix4f projectionMatrix,
+            Camera camera, Frustum frustum, boolean bindFramebuffer) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.world == null || client.player == null)
+            return;
+
+        // 开始帧计时
+        PerformanceStats.getInstance().beginFrame();
+
+        // [Config Control] 如果不在 Replay 渲染模式且配置关闭了游戏内渲染，则跳过
+        if (!ReplayModUtil.isRendering() && !ModConfig.getInstance().shouldRenderInGame()) {
+            return;
+        }
+
+        // 记录日志（只记录一次）
+        if (bindFramebuffer && !hasLoggedStandardRenderPath) {
+            Nebula.LOGGER.info("[Nebula/Render] ✓ Rendering via Mixin (standard mode).");
+            hasLoggedStandardRenderPath = true;
+        } else if (!bindFramebuffer && !hasLoggedIrisRenderPath) {
+            Nebula.LOGGER.info("[Nebula/Render] ✓ Rendering via Mixin (Iris mode).");
+            hasLoggedIrisRenderPath = true;
+        }
+
+        Vec3d cameraPos = camera.getPos();
+
+        // 使用传入的 ModelView 矩阵，移除平移分量
+        Matrix4f mvMatrix = new Matrix4f(modelViewMatrix);
+        mvMatrix.m30(0.0f);
+        mvMatrix.m31(0.0f);
+        mvMatrix.m32(0.0f);
+
+        // 计算相机方向向量 (用于 Billboard 朝向)
+        float[] cameraRight = new float[3];
+        float[] cameraUp = new float[3];
+        calculateCameraVectors(camera, cameraRight, cameraUp);
+
+        int totalParticles = 0;
+
+        // 创建渲染列表副本，避免长时间持有锁阻塞主线程
+        List<AnimationInstance> renderList;
+        synchronized (activeInstances) {
+            renderList = new ArrayList<>(activeInstances);
+        }
+
+        // 最大渲染距离（用于距离剔除备用）
+        double maxRenderDistance = client.options.getClampedViewDistance() * 16.0 * 2.0;
+
+        for (AnimationInstance instance : renderList) {
+            // 【视锥剔除】优先使用完整的视锥剔除
+            if (frustum != null) {
+                Box worldBbox = instance.getWorldBoundingBox();
+                if (worldBbox != null && !frustum.isVisible(worldBbox)) {
+                    continue;
+                }
+            } else {
+                // 降级：简化距离剔除
+                Vec3d origin = instance.getOrigin();
+                double distSq = origin.squaredDistanceTo(cameraPos);
+                if (distSq > maxRenderDistance * maxRenderDistance) {
+                    continue;
+                }
+            }
+
+            // 确保纹理已加载（第一次渲染时）
+            instance.ensureTexturesLoaded();
+
+            ByteBuffer frameData = instance.getNextFrame();
+
+            if (frameData != null && frameData.remaining() > 0) {
+                ByteBuffer readBuffer = frameData.slice();
+
+                int particleCount = readBuffer.remaining() / AnimationFrame.BYTES_PER_PARTICLE;
+                totalParticles += particleCount;
+
+                Vec3d origin = instance.getOrigin();
+
+                // 计算粒子系统原点相对于相机的偏移
+                float relX = (float) (origin.x - cameraPos.x);
+                float relY = (float) (origin.y - cameraPos.y);
+                float relZ = (float) (origin.z - cameraPos.z);
+
+                // 计算插值系数
+                double now = ReplayModUtil.getCurrentAnimationTime();
+                double start = instance.startSeconds;
+                double elapsed = now - start;
+                double currentFrameFloat = elapsed * instance.targetFps;
+
+                float partialTicks = (float) (currentFrameFloat - (instance.renderedFrames - 1));
+                if (partialTicks < 0)
+                    partialTicks = 0;
+                if (partialTicks > 1)
+                    partialTicks = 1;
+
+                // 使用 GPU 渲染器绘制
+                GpuParticleRenderer.render(
+                        readBuffer,
+                        particleCount,
+                        mvMatrix,
+                        projectionMatrix,
+                        cameraRight,
+                        cameraUp,
+                        relX,
+                        relY,
+                        relZ,
+                        partialTicks,
+                        bindFramebuffer);
+            }
+
+            currentParticleCount = totalParticles;
+
+            // 更新性能统计
+            PerformanceStats stats = PerformanceStats.getInstance();
+            stats.setParticleCount(totalParticles);
+            stats.setInstanceCount(renderList.size());
+            stats.endFrame();
+        }
+    }
+
+    /**
+     * 渲染 Tick（每帧调用）- 已废弃
+     * 
+     * @deprecated 请使用 {@link #renderTickMixin} 代替。此方法仅保留用于兼容，不再被调用。
+     * 
+     *             注意：当 Iris Shaders 激活时，渲染由 MixinWorldRenderer 处理，此方法会跳过
      */
     public void renderTick(WorldRenderContext context) {
         MinecraftClient client = MinecraftClient.getInstance();
@@ -258,8 +391,6 @@ public class ClientAnimationManager {
         RenderSystem.enableBlend();
         RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
 
-        // 【关键】保留深度测试，但设为 LEQUAL (小于等于)
-        // 这样粒子会被前面的墙挡住，但能画在天空和背景上
         RenderSystem.enableDepthTest();
         RenderSystem.depthFunc(GL11.GL_LEQUAL);
         // 锁定深度写入 (只画颜色，不污染深度，防止半透明排序错误)

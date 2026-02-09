@@ -23,6 +23,7 @@ import java.nio.FloatBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 import java.util.stream.Collectors;
+import com.atemukesu.nebula.client.util.IrisUtil;
 
 /**
  * GPU 粒子渲染器 (Persistent Mapped Buffer 高性能版)
@@ -283,11 +284,18 @@ public class GpuParticleRenderer {
         GL11.glGetIntegerv(GL11.GL_VIEWPORT, viewport);
 
         // 【Iris 兼容】只有在非 Iris 模式下，才强制绑定 MC 主 Framebuffer
-        if (bindFramebuffer) {
+        if (bindFramebuffer && !IrisUtil.isIrisRenderingActive()) {
             MinecraftClient.getInstance().getFramebuffer().beginWrite(false);
         }
 
+        // 【Iris 兼容】在使用 Iris 时，显式绑定其半透明 Framebuffer
+        // 参考 NeoInstancedRenderManager，通过反射调用 Iris 的 bind() 方法
+        if (IrisUtil.isIrisRenderingActive()) {
+            IrisUtil.bindIrisTranslucentFramebuffer();
+        }
+
         // 获取当前绑定的 Framebuffer ID (无论是 MC 的还是 Iris 的)
+        // 此时如果是 Iris 模式，targetFboId 应该是 Iris 的 writingToAfterTranslucent FBO
         int targetFboId = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
 
         // 渲染状态设置
@@ -325,6 +333,8 @@ public class GpuParticleRenderer {
         } else {
             GL20.glUniform1i(uUseTexture, 0);
         }
+
+        // --- 渲染逻辑分支 ---
 
         // --- 渲染逻辑分支 ---
 
@@ -392,6 +402,9 @@ public class GpuParticleRenderer {
 
         } else {
             // === 传统渲染路径 (Single Pass) ===
+
+            // 【Iris 兼容】在使用 Iris 时，显式绑定其半透明 Framebuffer 以获得正确的深度和颜色缓冲
+
             // 根据配置应用混合模式
             applyBlendMode(blendMode);
 
@@ -427,20 +440,36 @@ public class GpuParticleRenderer {
             currentBufferIndex = (currentBufferIndex + 1) % BUFFER_COUNT;
         }
 
-        // === 状态恢复 ===
-        GL30.glBindVertexArray(0);
-        ParticleTextureManager.unbind();
-        RenderSystem.activeTexture(GL13.GL_TEXTURE0);
+        // === 状态恢复===
 
-        GL20.glUseProgram(0);
+        // 1. 解绑我们使用的资源
+        GL30.glBindVertexArray(0);
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, SSBO_BINDING_INDEX, 0); // 关键：解绑 SSBO
+        ParticleTextureManager.unbind();
+
+        RenderSystem.activeTexture(GL13.GL_TEXTURE0);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+
+        // 2. 恢复 OpenGL 状态
         RenderSystem.defaultBlendFunc();
-        RenderSystem.depthMask(true);
-        RenderSystem.depthFunc(GL11.GL_LEQUAL);
         RenderSystem.enableDepthTest();
+        RenderSystem.depthFunc(GL11.GL_LEQUAL);
+        RenderSystem.depthMask(true);
         RenderSystem.enableCull();
 
+        // 3. 【核心修复】正确重置 Shader
+        // 不要只调用 glUseProgram(0)，必须通知 RenderSystem 我们清理了 Shader
+        // 否则 MC 以为 Shader 还是它的，直接 setUniform 就会报错崩溃
+        GL20.glUseProgram(0);
+        RenderSystem.setShader(() -> null);
+
+        // 4. 恢复视口
+        GL11.glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+
+        // 5. 恢复 Framebuffer 状态
         if (bindFramebuffer) {
-            RenderSystem.setShaderTexture(0, SpriteAtlasTexture.BLOCK_ATLAS_TEXTURE);
+            // 确保切回 MC 的写状态
+            MinecraftClient.getInstance().getFramebuffer().beginWrite(false);
         }
 
         GL11.glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);

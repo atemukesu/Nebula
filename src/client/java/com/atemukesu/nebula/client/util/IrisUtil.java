@@ -75,4 +75,59 @@ public class IrisUtil {
         hasLoggedShaderOff = false;
         Nebula.LOGGER.debug("[Nebula/Iris] Cache reset.");
     }
+
+    /**
+     * 尝试使用反射绑定 Iris 的半透明阶段 Framebuffer
+     * 避免直接使用 bindAndShareDepth 导致的深度/缓冲区冲突问题
+     */
+    public static void bindIrisTranslucentFramebuffer() {
+        if (!isIrisRenderingActive())
+            return;
+
+        try {
+            // 1. 获取 Iris 主类与 PipelineManager
+            Class<?> irisClass = Class.forName("net.irisshaders.iris.Iris");
+            Object pipelineManager = irisClass.getMethod("getPipelineManager").invoke(null);
+            if (pipelineManager == null)
+                return;
+
+            // 2. 获取当前 Pipeline
+            Object pipeline = pipelineManager.getClass().getMethod("getPipeline").invoke(pipelineManager);
+            if (pipeline == null)
+                return;
+
+            // 3. 尝试获取 writingToAfterTranslucent 字段
+            // 注意：该字段可能位于 Pipeline 中，或者 Pipeline 是个 wrapper 包含 Program
+            // 根据用户提示，我们在对象中查找该字段
+            java.lang.reflect.Field field;
+            try {
+                field = pipeline.getClass().getDeclaredField("writingToAfterTranslucent");
+            } catch (NoSuchFieldException e) {
+                // 如果直接在 pipeline 里找不到，尝试获取 program (如果有 getProgram 方法)
+                // 这里做一个假设性的尝试，但这取决于具体的 Iris 版本
+                try {
+                    Object program = pipeline.getClass().getMethod("getProgram").invoke(pipeline);
+                    field = program.getClass().getDeclaredField("writingToAfterTranslucent");
+                    pipeline = program; // 更新目标对象
+                } catch (Exception ex) {
+                    return; // 无法定位字段
+                }
+            }
+
+            if (field == null)
+                return;
+
+            field.setAccessible(true);
+            Object renderTarget = field.get(pipeline);
+
+            // 4. 执行 bind() 并设置 DrawBuffer
+            if (renderTarget != null) {
+                renderTarget.getClass().getMethod("bind").invoke(renderTarget);
+                org.lwjgl.opengl.GL11.glDrawBuffer(org.lwjgl.opengl.GL30.GL_COLOR_ATTACHMENT0);
+            }
+
+        } catch (Exception e) {
+            Nebula.LOGGER.debug("[Nebula/Iris] Failed to bind internal framebuffer: {}", e.getMessage());
+        }
+    }
 }

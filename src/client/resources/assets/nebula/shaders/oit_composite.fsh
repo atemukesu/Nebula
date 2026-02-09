@@ -1,4 +1,4 @@
-#version 150
+#version 430 core
 
 uniform sampler2D uAccumTexture;
 uniform sampler2D uRevealTexture;
@@ -6,6 +6,10 @@ uniform sampler2D uRevealTexture;
 in vec2 texCoord;
 
 out vec4 fragColor;
+
+float max3(vec3 v) {
+    return max(max(v.x, v.y), v.z);
+}
 
 void main() {
     // 从 Reveal 纹理读取剩余可见度
@@ -24,10 +28,15 @@ void main() {
     vec4 accum = texture(uAccumTexture, texCoord);
 
     // 避免除以零
-    float weight = max(accum.a, 0.00001);
+    // float weight = max(accum.a, 0.00001);
 
-    // 计算加权平均颜色
-    vec3 avgColor = accum.rgb / weight;
+    // suppress overflow (抑制溢出)
+    if (isinf(max3(abs(accum.rgb)))){
+        accum.rgb = vec3(accum.a);
+    }
+
+    // prevent floating point precision bug (防止除零导致的花屏)
+    vec3 avgColor = accum.rgb / max(accum.a, 0.00001);
 
     // 最终输出：
     // Color = avgColor

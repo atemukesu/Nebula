@@ -49,7 +49,7 @@ void main() {
         // Weighted Blended OIT Weight Function
         // weight = alpha * max(0.01, min(1.0, 3000.0 / (1e-5 + pow(abs(z) / 200.0, 4.0) + ...)))
         // 简化版权重函数:
-        float weight = clamp(pow(min(1.0, alpha * 10.0) + 0.01, 3.0) * 1e8 * pow(1.0 - gl_FragCoord.z * 0.9, 3.0), 1e-2, 3e3);
+        float weight = clamp(pow(min(1.0, alpha * 10.0) + 0.01, 3.0) * 1e8 * pow(1.0 - gl_FragCoord.z * 0.9, 3.0), 1e-2, 3e3) * min(2.0, gl_FragCoord.w);
 
         // Accumulator (Location 0)
         // Store: rgb * alpha * weight, alpha * weight

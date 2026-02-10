@@ -455,7 +455,6 @@ public class GpuParticleRenderer {
         RenderSystem.depthMask(true);
         RenderSystem.enableBlend();
 
-        // 【CRITICAL FIX】
         // 显式重置 GL Blend Func，防止上一次 Batch 的 Pass 2 (OIT Blend) 状态残留。
         // RenderSystem 可能会误以为状态未变而跳过指令，导致第二个 Batch 的不透明粒子
         // 继承了 OIT 的混合模式 (Additive)，从而变成半透明/发亮。
@@ -492,6 +491,15 @@ public class GpuParticleRenderer {
 
         // Stats
         PerformanceStats stats = PerformanceStats.getInstance();
+        stats.setShaderProgram(shaderProgram);
+        stats.setVao(vao);
+        stats.setSsbo(ssbo);
+        stats.setBufferSizeBytes(currentBufferSize);
+        stats.setUsedBufferBytes(lastFrameUsedBytes);
+        stats.setPmbSupported(pmbSupported);
+        stats.setUsingFallback(useFallback);
+        stats.setIrisMode(IrisUtil.isIrisRenderingActive());
+        stats.setShouldBindFramebuffer(true); // OIT always explicitly binds FBOs
         stats.setOrigin(originX, originY, originZ);
         stats.setLastGlError(GL11.glGetError(), "Post-OIT-Batch");
 
@@ -703,9 +711,6 @@ public class GpuParticleRenderer {
 
             GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
 
-            // ==========================================
-            // Pass 2: 透明粒子 (Translucent)
-            // ==========================================
             // ==========================================
             // Pass 2: 透明粒子 (Translucent)
             // ==========================================

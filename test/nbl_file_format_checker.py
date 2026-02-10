@@ -1,404 +1,369 @@
 import sys
-import os
 import struct
+import os
+import time
 import zstandard as zstd
-from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QTextEdit, QFileDialog, QMessageBox
-)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+                             QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, 
+                             QHeaderView, QFileDialog, QTextEdit, QLabel, QSplitter,
+                             QProgressBar, QMessageBox)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
+from PyQt5.QtGui import QColor, QFont
 
-# 错误信息存储类
-class ValidationError:
-    def __init__(self, offset: int, message: str):
-        self.offset = offset
-        self.hex_offset = f"0x{offset:08X}" if offset >= 0 else "全局错误"
-        self.message = message
+# ==========================================
+# 核心校验逻辑 (Validator Core)
+# ==========================================
 
-# 校验线程（避免GUI卡顿）
-class NBLValidatorThread(QThread):
-    progress_signal = pyqtSignal(str)
-    result_signal = pyqtSignal(list)
+class NBLValidator:
+    def __init__(self):
+        self.log_messages = []
 
-    def __init__(self, file_path: str):
-        super().__init__()
-        self.file_path = file_path
-        self.errors = []
+    def log(self, message):
+        self.log_messages.append(message)
 
-    def add_error(self, offset: int, msg: str):
-        self.errors.append(ValidationError(offset, msg))
-
-    def read_struct(self, file, offset: int, fmt: str, desc: str) -> tuple | None:
-        """从指定偏移读取结构化数据（小端序）"""
-        try:
-            file.seek(offset)
-            size = struct.calcsize(fmt)
-            data = file.read(size)
-            if len(data) < size:
-                self.add_error(offset, f"读取{desc}时字节不足，需要{size}字节，实际{len(data)}字节")
-                return None
-            return struct.unpack(f"<{fmt}", data)
-        except Exception as e:
-            self.add_error(offset, f"读取{desc}失败: {str(e)}")
-            return None
-
-    def validate_frame_data(self, f, frame_idx: int, frame_offset: int, frame_size: int, file_size: int):
-        """校验单帧数据（Zstd解压+格式校验）"""
-        self.progress_signal.emit(f"正在校验帧 {frame_idx} (偏移: 0x{frame_offset:08X})")
+    def validate(self, file_path):
+        self.log_messages = []
+        self.log(f"开始检查文件: {os.path.basename(file_path)}")
         
-        # 1. 检查帧数据范围
-        if frame_offset < 0 or frame_offset >= file_size:
-            self.add_error(frame_offset, f"帧{frame_idx}偏移量超出文件范围: {frame_offset}")
-            return
-        if frame_size <= 0 or frame_offset + frame_size > file_size:
-            self.add_error(frame_offset, f"帧{frame_idx}大小异常或超出文件范围: {frame_size}")
-            return
-
-        # 2. 读取压缩帧数据
         try:
-            f.seek(frame_offset)
-            compressed_data = f.read(frame_size)
-            if len(compressed_data) != frame_size:
-                self.add_error(frame_offset, f"帧{frame_idx}读取字节数不匹配，期望{frame_size}字节，实际{len(compressed_data)}字节")
-                return
+            file_size = os.path.getsize(file_path)
+            with open(file_path, 'rb') as f:
+                # --- 1. File Header Check ---
+                self.log(">> 正在检查文件头 (Header)...")
+                header_data = f.read(48)
+                if len(header_data) < 48:
+                    return False, "文件过小，无法读取文件头"
+
+                magic, version, target_fps, total_frames, tex_count, attrs, \
+                bbox_min_x, bbox_min_y, bbox_min_z, \
+                bbox_max_x, bbox_max_y, bbox_max_z, \
+                reserved = struct.unpack('<8sHHIHH3f3f4s', header_data)
+
+                if magic != b'NEBULAFX':
+                    return False, f"Magic Number 错误。期望: NEBULAFX, 实际: {magic}"
+                
+                if version != 1:
+                    return False, f"版本号不支持。期望: 1, 实际: {version}"
+                
+                # Check Reserved (Should be 0, but usually warn is enough, spec says forced 0)
+                if reserved != b'\x00\x00\x00\x00':
+                    self.log("[Warning] 保留位 (Reserved) 不为全 0。")
+
+                self.log(f"Header 信息: FPS={target_fps}, 总帧数={total_frames}, 贴图数={tex_count}")
+
+                # --- 2. Texture Block Check ---
+                self.log(">> 正在检查纹理定义块 (Texture Block)...")
+                for i in range(tex_count):
+                    # Read path length (uint16)
+                    len_bytes = f.read(2)
+                    if len(len_bytes) < 2:
+                        return False, "纹理块读取意外中断 (EOF)"
+                    path_len = struct.unpack('<H', len_bytes)[0]
+                    
+                    # Read path
+                    path_bytes = f.read(path_len)
+                    if len(path_bytes) < path_len:
+                        return False, f"纹理路径读取不完整 (Texture #{i})"
+                    
+                    try:
+                        path_str = path_bytes.decode('utf-8')
+                    except UnicodeDecodeError:
+                        return False, f"纹理路径不是有效的 UTF-8 编码 (Texture #{i})"
+
+                    # Read rows/cols
+                    rc_bytes = f.read(2)
+                    if len(rc_bytes) < 2:
+                        return False, "纹理行列数读取中断"
+                    
+                # --- 3. Frame Index Table Check ---
+                self.log(">> 正在检查帧索引表 (Frame Index Table)...")
+                frame_indices = []
+                for i in range(total_frames):
+                    fi_data = f.read(12) # uint64 offset + uint32 size
+                    if len(fi_data) < 12:
+                         return False, f"帧索引表在第 {i} 帧处中断"
+                    chunk_offset, chunk_size = struct.unpack('<QI', fi_data)
+                    
+                    if chunk_offset + chunk_size > file_size:
+                        return False, f"帧 {i} 的数据块越界 (Offset {chunk_offset} + Size {chunk_size} > FileSize)"
+                    
+                    frame_indices.append((chunk_offset, chunk_size))
+
+                # --- 4. Keyframe Index Table Check ---
+                self.log(">> 正在检查关键帧索引表 (Keyframe Index Table)...")
+                kf_count_bytes = f.read(4)
+                if len(kf_count_bytes) < 4:
+                    return False, "关键帧计数读取中断"
+                kf_count = struct.unpack('<I', kf_count_bytes)[0]
+                
+                # Skip reading indices content, just check file availability
+                if kf_count > total_frames:
+                     self.log(f"[Warning] 关键帧数量 ({kf_count}) 大于总帧数 ({total_frames})，这很奇怪。")
+
+                # Seek past the keyframe indices (4 bytes * kf_count)
+                seek_amount = 4 * kf_count
+                # Check if we can seek that far
+                current_pos = f.tell()
+                if current_pos + seek_amount > file_size:
+                    return False, "关键帧索引表数据越界"
+                f.seek(seek_amount, 1) # relative seek
+
+                # --- 5. Frame Data Chunk Check (Deep Scan) ---
+                self.log(">> 正在进行帧数据深度扫描 (Zstd解压与结构校验)...")
+                dctx = zstd.ZstdDecompressor()
+                
+                for i, (offset, size) in enumerate(frame_indices):
+                    f.seek(offset)
+                    compressed_data = f.read(size)
+                    
+                    if len(compressed_data) != size:
+                         return False, f"帧 {i} 数据读取不完整"
+
+                    try:
+                        # 规范：每一帧独立压缩，全新上下文
+                        decompressed = dctx.decompress(compressed_data)
+                    except zstd.ZstdError as e:
+                        return False, f"帧 {i} Zstd 解压失败: {str(e)} (可能是数据损坏或非独立压缩)"
+
+                    # Check Payload Structure
+                    if len(decompressed) < 5:
+                        return False, f"帧 {i} 解压后数据过短 (Header缺失)"
+                    
+                    frame_type = decompressed[0]
+                    particle_count = struct.unpack('<I', decompressed[1:5])[0]
+                    
+                    expected_payload_size = 0
+                    
+                    # Header is 5 bytes
+                    header_size = 5 
+                    
+                    if frame_type == 0: # I-Frame
+                        # SoA Layout:
+                        # Pos (float*3) + Col (uint8*4) + Size (uint16) + TexID (uint8) + Seq (uint8) + PID (int32)
+                        # 12N + 4N + 2N + 1N + 1N + 4N = 24N
+                        expected_payload_size = particle_count * 24
+                    elif frame_type == 1: # P-Frame
+                        # SoA Layout:
+                        # PosDelta (int16*3) + ColDelta (int8*4) + SizeDelta (int16) + TexIDDelta (int8) + SeqDelta (int8) + PID (int32)
+                        # 6N + 4N + 2N + 1N + 1N + 4N = 18N
+                        expected_payload_size = particle_count * 18
+                    else:
+                        return False, f"帧 {i} 未知的 FrameType: {frame_type}"
+
+                    actual_payload_size = len(decompressed) - header_size
+                    if actual_payload_size != expected_payload_size:
+                        return False, (f"帧 {i} 数据长度校验失败 (Type {frame_type}, N={particle_count})。\n"
+                                       f"期望 Payload: {expected_payload_size} bytes, 实际: {actual_payload_size} bytes")
+
+                self.log(">> 文件结构检查完毕，未发现严重错误。")
+                return True, "检查通过 (Valid)"
+
         except Exception as e:
-            self.add_error(frame_offset, f"读取帧{frame_idx}压缩数据失败: {str(e)}")
-            return
+            import traceback
+            return False, f"发生未处理的异常: {str(e)}\n{traceback.format_exc()}"
 
-        # 3. Zstd解压
-        try:
-            dctx = zstd.ZstdDecompressor()
-            decompressed_data = dctx.decompress(compressed_data)
-        except zstd.ZstdError as e:
-            self.add_error(frame_offset, f"帧{frame_idx}Zstd解压失败: {str(e)}")
-            return
-        except Exception as e:
-            self.add_error(frame_offset, f"帧{frame_idx}解压过程异常: {str(e)}")
-            return
+# ==========================================
+# 多线程工作类 (Worker)
+# ==========================================
 
-        # 4. 校验解压后帧数据格式
-        if len(decompressed_data) < 5:
-            self.add_error(frame_offset, f"帧{frame_idx}解压后数据过短，需要至少5字节，实际{len(decompressed_data)}字节")
-            return
+class ValidationWorker(QObject):
+    finished = pyqtSignal()
+    file_processed = pyqtSignal(str, bool, str, str) # filepath, is_valid, status_text, log_text
 
-        # 4.1 解析帧类型和粒子数
-        frame_type = decompressed_data[0] & 0xFF
-        particle_count = struct.unpack("<i", decompressed_data[1:5])[0]
-
-        # 4.2 校验帧类型
-        if frame_type not in (0, 1):
-            self.add_error(frame_offset, f"帧{frame_idx}类型非法，期望0(I帧)或1(P帧)，实际{frame_type}")
-
-        # 4.3 校验粒子数
-        if particle_count < 0 or particle_count > 1000000:
-            self.add_error(frame_offset, f"帧{frame_idx}粒子数异常，期望0-1000000，实际{particle_count}")
-
-        # 4.4 校验帧数据长度（根据帧类型）
-        min_data_len = 5  # frame_type(1) + particle_count(4)
-        if frame_type == 0:  # I帧数据长度校验
-            # I帧：每个粒子包含 x/y/z(各4) + r/g/b/a(各1) + size(2) + texID(1) + seqID(1) + id(4) = 24字节
-            required_len = min_data_len + particle_count * 24
-            if len(decompressed_data) < required_len:
-                self.add_error(frame_offset, f"帧{frame_idx}(I帧)数据不足，需要{required_len}字节，实际{len(decompressed_data)}字节")
-        else:  # P帧数据长度校验
-            # P帧：每个粒子包含 dx/dy/dz(各2) + dr/dg/db/da(各1) + size(2) + texID(1) + seqID(1) + id(4) = 18字节
-            required_len = min_data_len + particle_count * 18
-            if len(decompressed_data) < required_len:
-                self.add_error(frame_offset, f"帧{frame_idx}(P帧)数据不足，需要{required_len}字节，实际{len(decompressed_data)}字节")
+    def __init__(self, file_paths):
+        super().__init__()
+        self.file_paths = file_paths
+        self.is_running = True
 
     def run(self):
-        """主线程执行完整校验"""
-        self.errors = []
-        file_path = self.file_path
+        validator = NBLValidator()
+        for path in self.file_paths:
+            if not self.is_running:
+                break
+            
+            is_valid, status = validator.validate(path)
+            log_text = "\n".join(validator.log_messages)
+            
+            # Emit result
+            self.file_processed.emit(path, is_valid, status, log_text)
+            
+        self.finished.emit()
 
-        # 基础文件检查
-        if not os.path.exists(file_path):
-            self.add_error(-1, f"文件不存在: {file_path}")
-            self.result_signal.emit(self.errors)
-            return
-        if not os.path.isfile(file_path):
-            self.add_error(-1, f"不是有效的文件: {file_path}")
-            self.result_signal.emit(self.errors)
-            return
+    def stop(self):
+        self.is_running = False
 
-        try:
-            with open(file_path, "rb") as f:
-                file_size = os.path.getsize(file_path)
-                current_offset = 0
-                total_frames = 0
-                frame_offsets = []
-                frame_sizes = []
+# ==========================================
+# 主界面 (GUI)
+# ==========================================
 
-                # ===================== 1. 校验文件头 (48字节) =====================
-                self.progress_signal.emit("校验文件头...")
-                header_size = 48
-                if file_size < header_size:
-                    self.add_error(current_offset, f"文件过小，至少需要{header_size}字节的头部，实际{file_size}字节")
-                    self.result_signal.emit(self.errors)
-                    return
-
-                # 1.1 Magic数校验
-                magic_tuple = self.read_struct(f, current_offset, "8s", "Magic数")
-                if magic_tuple is None:
-                    self.result_signal.emit(self.errors)
-                    return
-                magic_str = magic_tuple[0].decode('ascii', errors='replace')
-                if magic_str != "NEBULAFX":
-                    self.add_error(current_offset, f"Magic数错误，期望'NEBULAFX'，实际'{magic_str}'")
-                current_offset += 8
-
-                # 1.2 跳过8-9字节
-                current_offset += 2
-
-                # 1.3 目标帧率
-                target_fps_tuple = self.read_struct(f, current_offset, "H", "目标帧率")
-                target_fps = 0
-                if target_fps_tuple is not None:
-                    target_fps = target_fps_tuple[0]
-                    if target_fps <= 0 or target_fps > 120:
-                        self.add_error(current_offset, f"目标帧率异常，期望1-120，实际{target_fps}")
-                current_offset += 2
-
-                # 1.4 总帧数
-                total_frames_tuple = self.read_struct(f, current_offset, "i", "总帧数")
-                total_frames = 0
-                if total_frames_tuple is not None:
-                    total_frames = total_frames_tuple[0]
-                    if total_frames <= 0 or total_frames > 100000:
-                        self.add_error(current_offset, f"总帧数异常，期望1-100000，实际{total_frames}")
-                current_offset += 4
-
-                # 1.5 纹理数量
-                texture_count_tuple = self.read_struct(f, current_offset, "H", "纹理数量")
-                texture_count = 0
-                if texture_count_tuple is not None:
-                    texture_count = texture_count_tuple[0]
-                    if texture_count < 0 or texture_count > 1000:
-                        self.add_error(current_offset, f"纹理数量异常，期望0-1000，实际{texture_count}")
-                current_offset += 2
-
-                # 1.6 包围盒Min/Max
-                bbox_min_tuple = self.read_struct(f, 20, "fff", "包围盒最小值")
-                bbox_max_tuple = self.read_struct(f, 32, "fff", "包围盒最大值")
-                if bbox_min_tuple and bbox_max_tuple:
-                    for i in range(3):
-                        if bbox_max_tuple[i] < bbox_min_tuple[i]:
-                            self.add_error(32 + i*4, f"包围盒最大值[{i}]小于最小值，max={bbox_max_tuple[i]}, min={bbox_min_tuple[i]}")
-                current_offset = 48
-
-                # ===================== 2. 校验纹理条目 =====================
-                self.progress_signal.emit("校验纹理条目...")
-                for tex_idx in range(texture_count):
-                    # 纹理路径长度
-                    path_len_tuple = self.read_struct(f, current_offset, "H", f"纹理{tex_idx}路径长度")
-                    path_len = 0
-                    if path_len_tuple is not None:
-                        path_len = path_len_tuple[0]
-                        if path_len < 0 or path_len > 1024:
-                            self.add_error(current_offset, f"纹理{tex_idx}路径长度异常，期望0-1024，实际{path_len}")
-                    current_offset += 2
-
-                    # 纹理路径（UTF-8）
-                    if path_len > 0:
-                        try:
-                            f.seek(current_offset)
-                            path_data = f.read(path_len)
-                            if len(path_data) < path_len:
-                                self.add_error(current_offset, f"纹理{tex_idx}路径字节不足，需要{path_len}字节，实际{len(path_data)}字节")
-                            else:
-                                path_data.decode('utf-8')  # 仅校验编码
-                        except UnicodeDecodeError:
-                            self.add_error(current_offset, f"纹理{tex_idx}路径不是合法的UTF-8编码")
-                        except Exception as e:
-                            self.add_error(current_offset, f"读取纹理{tex_idx}路径失败: {str(e)}")
-                    current_offset += path_len
-
-                    # texID/seqID
-                    self.read_struct(f, current_offset, "BB", f"纹理{tex_idx}的texID和seqID")
-                    current_offset += 2
-
-                # ===================== 3. 校验帧索引表 =====================
-                self.progress_signal.emit("校验帧索引表...")
-                frame_index_size = total_frames * 12
-                if current_offset + frame_index_size > file_size:
-                    self.add_error(current_offset, f"帧索引表字节不足，需要{frame_index_size}字节，剩余{file_size - current_offset}字节")
-                else:
-                    frame_offsets = []
-                    frame_sizes = []
-                    for frame_idx in range(total_frames):
-                        # 帧偏移
-                        frame_offset_tuple = self.read_struct(f, current_offset, "q", f"帧{frame_idx}偏移量")
-                        frame_offset = 0
-                        if frame_offset_tuple is not None:
-                            frame_offset = frame_offset_tuple[0]
-                            frame_offsets.append(frame_offset)
-                        current_offset += 8
-
-                        # 帧大小
-                        frame_size_tuple = self.read_struct(f, current_offset, "i", f"帧{frame_idx}大小")
-                        frame_size = 0
-                        if frame_size_tuple is not None:
-                            frame_size = frame_size_tuple[0]
-                            frame_sizes.append(frame_size)
-                            if frame_size <= 0:
-                                self.add_error(current_offset, f"帧{frame_idx}大小异常: {frame_size}")
-                        current_offset += 4
-
-                # ===================== 4. 校验关键帧索引表 =====================
-                self.progress_signal.emit("校验关键帧索引表...")
-                # 关键帧数量
-                keyframe_count_tuple = self.read_struct(f, current_offset, "i", "关键帧数量")
-                keyframe_count = 0
-                if keyframe_count_tuple is not None:
-                    keyframe_count = keyframe_count_tuple[0]
-                    current_offset += 4
-
-                    if keyframe_count < 0 or keyframe_count > total_frames:
-                        self.add_error(current_offset - 4, f"关键帧数量异常，期望0-{total_frames}，实际{keyframe_count}")
-                    else:
-                        # 关键帧列表
-                        keyframe_list_size = keyframe_count * 4
-                        if current_offset + keyframe_list_size > file_size:
-                            self.add_error(current_offset, f"关键帧列表字节不足，需要{keyframe_list_size}字节，剩余{file_size - current_offset}字节")
-                        else:
-                            for kf_idx in range(keyframe_count):
-                                kf_index_tuple = self.read_struct(f, current_offset, "i", f"关键帧{kf_idx}索引")
-                                kf_index = 0
-                                if kf_index_tuple is not None:
-                                    kf_index = kf_index_tuple[0]
-                                    if kf_index < 0 or kf_index >= total_frames:
-                                        self.add_error(current_offset, f"关键帧{kf_idx}索引异常，超出帧数范围: {kf_index}")
-                                current_offset += 4
-                else:
-                    current_offset += 4  # 即使读取失败，也要移动偏移量
-
-                # ===================== 5. 校验帧数据（核心） =====================
-                if total_frames > 0 and len(frame_offsets) == total_frames and len(frame_sizes) == total_frames:
-                    self.progress_signal.emit(f"开始校验{total_frames}帧数据（含Zstd解压）...")
-                    for frame_idx in range(total_frames):
-                        self.validate_frame_data(f, frame_idx, frame_offsets[frame_idx], frame_sizes[frame_idx], file_size)
-                else:
-                    self.add_error(-1, "跳过帧数据校验：总帧数或帧索引表不完整")
-
-                # ===================== 6. 最终校验 =====================
-                if current_offset > file_size:
-                    self.add_error(file_size, f"解析完成后偏移量超出文件范围，解析到{current_offset}字节，文件仅{file_size}字节")
-
-        except Exception as e:
-            self.add_error(-1, f"文件读取异常: {str(e)}")
-
-        # 返回校验结果
-        self.result_signal.emit(self.errors)
-
-# 主窗口
-class NBLValidatorWindow(QMainWindow):
+class NBLCheckerApp(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.setWindowTitle("NBL 格式校验工具 (NBL Validator)")
+        self.resize(1000, 700)
+        
+        # Styles
+        self.pass_color = QColor(200, 255, 200)
+        self.fail_color = QColor(255, 200, 200)
+        self.font_mono = QFont("Consolas", 10)
+        if not self.font_mono.exactMatch():
+            self.font_mono = QFont("Courier New", 10)
+
         self.init_ui()
-        self.validator_thread = None
+        self.files_map = {} # path -> row_index
 
     def init_ui(self):
-        # 窗口基本设置
-        self.setWindowTitle("NBL 文件格式校验工具")
-        self.setGeometry(100, 100, 800, 600)
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        layout = QVBoxLayout(main_widget)
 
-        # 中心部件
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
+        # Top Control Bar
+        control_layout = QHBoxLayout()
+        
+        btn_add = QPushButton("添加文件 / Add Files")
+        btn_add.clicked.connect(self.add_files)
+        btn_add.setStyleSheet("padding: 8px; font-weight: bold;")
+        
+        btn_clear = QPushButton("清空列表 / Clear")
+        btn_clear.clicked.connect(self.clear_list)
+        
+        self.btn_start = QPushButton("开始检查 / Start Check")
+        self.btn_start.clicked.connect(self.start_validation)
+        self.btn_start.setStyleSheet("background-color: #4CAF50; color: white; padding: 8px; font-weight: bold;")
+        
+        control_layout.addWidget(btn_add)
+        control_layout.addWidget(btn_clear)
+        control_layout.addStretch()
+        control_layout.addWidget(self.btn_start)
+        
+        layout.addLayout(control_layout)
 
-        # 布局
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(15, 15, 15, 15)
+        # Splitter Area
+        splitter = QSplitter(Qt.Horizontal)
+        
+        # Left: File Table
+        self.table = QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["文件名", "状态", "简述"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
+        self.table.setColumnWidth(1, 100)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.cellClicked.connect(self.show_log)
+        splitter.addWidget(self.table)
 
-        # 1. 文件选择区域
-        file_layout = QHBoxLayout()
-        file_label = QLabel("文件路径：")
-        self.file_edit = QLineEdit()
-        self.file_edit.setPlaceholderText("请选择或输入NBL文件路径")
-        browse_btn = QPushButton("浏览")
-        browse_btn.clicked.connect(self.browse_file)
-        file_layout.addWidget(file_label)
-        file_layout.addWidget(self.file_edit)
-        file_layout.addWidget(browse_btn)
-        main_layout.addLayout(file_layout)
+        # Right: Log View
+        log_widget = QWidget()
+        log_layout = QVBoxLayout(log_widget)
+        log_layout.setContentsMargins(0, 0, 0, 0)
+        
+        lbl_log = QLabel("详细日志 (点击左侧文件查看):")
+        self.log_view = QTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setFont(self.font_mono)
+        
+        log_layout.addWidget(lbl_log)
+        log_layout.addWidget(self.log_view)
+        splitter.addWidget(log_widget)
+        
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        
+        layout.addWidget(splitter)
 
-        # 2. 操作按钮
-        btn_layout = QHBoxLayout()
-        self.validate_btn = QPushButton("开始校验")
-        self.validate_btn.clicked.connect(self.start_validation)
-        self.clear_btn = QPushButton("清空结果")
-        self.clear_btn.clicked.connect(self.clear_result)
-        btn_layout.addWidget(self.validate_btn)
-        btn_layout.addWidget(self.clear_btn)
-        main_layout.addLayout(btn_layout)
+        # Progress Bar
+        self.progress = QProgressBar()
+        layout.addWidget(self.progress)
+        
+        # Status Bar
+        self.statusBar().showMessage("就绪。")
 
-        # 3. 进度提示
-        self.progress_label = QLabel("状态：未开始")
-        main_layout.addWidget(self.progress_label)
+    def add_files(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "选择 NBL 文件", "", "NebulaFX Files (*.nbl);;All Files (*)")
+        if files:
+            for f in files:
+                if f not in self.files_map:
+                    row = self.table.rowCount()
+                    self.table.insertRow(row)
+                    
+                    self.table.setItem(row, 0, QTableWidgetItem(os.path.basename(f)))
+                    self.table.setItem(row, 1, QTableWidgetItem("等待中"))
+                    self.table.setItem(row, 2, QTableWidgetItem(""))
+                    
+                    # Store full path in user role of first item
+                    self.table.item(row, 0).setData(Qt.UserRole, f)
+                    self.files_map[f] = row
 
-        # 4. 结果显示区域
-        result_label = QLabel("校验结果：")
-        main_layout.addWidget(result_label)
-        self.result_text = QTextEdit()
-        self.result_text.setReadOnly(True)
-        main_layout.addWidget(self.result_text)
-
-    def browse_file(self):
-        """文件选择对话框"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择NBL文件", "", "NBL文件 (*.nbl);;所有文件 (*.*)"
-        )
-        if file_path:
-            self.file_edit.setText(file_path)
+    def clear_list(self):
+        self.table.setRowCount(0)
+        self.files_map.clear()
+        self.log_view.clear()
 
     def start_validation(self):
-        """启动校验"""
-        file_path = self.file_edit.text().strip()
-        if not file_path:
-            QMessageBox.warning(self, "警告", "请先选择或输入NBL文件路径")
+        if self.table.rowCount() == 0:
             return
 
-        # 禁用按钮，清空结果
-        self.validate_btn.setEnabled(False)
-        self.clear_btn.setEnabled(False)
-        self.result_text.clear()
-        self.progress_label.setText("状态：校验中...")
+        files_to_check = []
+        for i in range(self.table.rowCount()):
+            path = self.table.item(i, 0).data(Qt.UserRole)
+            self.table.setItem(i, 1, QTableWidgetItem("检查中..."))
+            self.table.item(i, 1).setBackground(Qt.white)
+            files_to_check.append(path)
 
-        # 创建并启动校验线程
-        self.validator_thread = NBLValidatorThread(file_path)
-        self.validator_thread.progress_signal.connect(self.update_progress)
-        self.validator_thread.result_signal.connect(self.show_result)
-        self.validator_thread.finished.connect(self.on_validation_finished)
-        self.validator_thread.start()
+        self.btn_start.setEnabled(False)
+        self.progress.setRange(0, len(files_to_check))
+        self.progress.setValue(0)
 
-    def update_progress(self, msg: str):
-        """更新进度提示"""
-        self.progress_label.setText(f"状态：{msg}")
+        # Thread setup
+        self.thread = QThread()
+        self.worker = ValidationWorker(files_to_check)
+        self.worker.moveToThread(self.thread)
 
-    def show_result(self, errors: list):
-        """显示校验结果"""
-        if not errors:
-            self.result_text.append("文件格式完全符合要求")
+        self.thread.started.connect(self.worker.run)
+        self.worker.file_processed.connect(self.update_row)
+        self.worker.finished.connect(self.validation_finished)
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+
+        self.thread.start()
+
+    def update_row(self, path, is_valid, status, log_text):
+        if path in self.files_map:
+            row = self.files_map[path]
+            
+            status_item = QTableWidgetItem("通过" if is_valid else "失败")
+            status_item.setBackground(self.pass_color if is_valid else self.fail_color)
+            status_item.setTextAlignment(Qt.AlignCenter)
+            
+            self.table.setItem(row, 1, status_item)
+            self.table.setItem(row, 2, QTableWidgetItem(status))
+            
+            # Store log in the filename item for retrieval
+            self.table.item(row, 0).setData(Qt.UserRole + 1, log_text)
+            
+            self.progress.setValue(self.progress.value() + 1)
+            
+            # If current selection matches this row, update log view
+            current_items = self.table.selectedItems()
+            if current_items and current_items[0].row() == row:
+                self.log_view.setText(log_text)
+
+    def validation_finished(self):
+        self.btn_start.setEnabled(True)
+        self.statusBar().showMessage("检查完成。")
+        QMessageBox.information(self, "完成", "批量检查已完成！")
+
+    def show_log(self, row, col):
+        log = self.table.item(row, 0).data(Qt.UserRole + 1)
+        if log:
+            self.log_view.setText(log)
         else:
-            self.result_text.append(f"发现 {len(errors)} 个错误：")
-            for idx, err in enumerate(errors, 1):
-                self.result_text.append(f"{idx}. {err.hex_offset}：{err.message}")
-
-    def on_validation_finished(self):
-        """校验完成后恢复UI状态"""
-        self.progress_label.setText("状态：校验完成")
-        self.validate_btn.setEnabled(True)
-        self.clear_btn.setEnabled(True)
-
-    def clear_result(self):
-        """清空结果"""
-        self.result_text.clear()
-        self.progress_label.setText("状态：未开始")
+            self.log_view.setText("（等待检查或无日志）")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    window = NBLValidatorWindow()
+    window = NBLCheckerApp()
     window.show()
-    # 等待用户关闭窗口（替代input()）
     sys.exit(app.exec_())

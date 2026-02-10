@@ -17,7 +17,7 @@ import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
+
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -51,8 +51,8 @@ public class NblStreamer implements Runnable {
     private float[] bboxMin = new float[3];
     private float[] bboxMax = new float[3];
 
-    // 使用 HashMap 存储粒子状态 (因为是单线程运行，无需 Concurrent)
-    private final Map<Integer, ParticleState> stateMap = new java.util.HashMap<>();
+    // [优化] 使用自定义的高性能 IntMap 替代 HashMap，避免 Integer 装箱和 GC 压力
+    private final IntParticleMap stateMap = new IntParticleMap(16384);
 
     private final BlockingQueue<ByteBuffer> gpuBufferQueue;
     private final AtomicBoolean isRunning = new AtomicBoolean(true);
@@ -343,29 +343,34 @@ public class NblStreamer implements Runnable {
     }
 
     private void processIFrame(ByteBuffer data, int particleCount, ByteBuffer gpuBuffer, int frameIdx) {
-        // [优化] 计算所有字段的偏移量，避免循环内重复计算
-        int baseOffset = data.position();
+        // [优化] IntMap 自动扩容，无需手动检查 size
+        long baseAddr = MemoryUtil.memAddress(data) + data.position();
+
+        // 计算偏移量
         int N = particleCount;
-        int xOff = baseOffset;
-        int yOff = xOff + (N * 4);
-        int zOff = yOff + (N * 4);
-        int rOff = zOff + (N * 4);
-        int gOff = rOff + N;
-        int bOff = gOff + N;
-        int aOff = bOff + N;
-        int sizeOff = aOff + N;
-        int texOff = sizeOff + (N * 2);
-        int seqOff = texOff + N;
-        int idOff = seqOff + N;
+        long xOff = baseAddr;
+        long yOff = xOff + (N * 4L);
+        long zOff = yOff + (N * 4L);
+        long rOff = zOff + (N * 4L);
+        long gOff = rOff + N;
+        long bOff = gOff + N;
+        long aOff = bOff + N;
+        long sizeOff = aOff + N;
+        long texOff = sizeOff + (N * 2L);
+        long seqOff = texOff + N;
+        long idOff = seqOff + N;
 
         for (int i = 0; i < particleCount; i++) {
-            int id = data.getInt(idOff + i * 4);
-            ParticleState p = stateMap.computeIfAbsent(id, k -> new ParticleState());
+            // MemoryUtil 读取避免了 ByteBuffer 的边界检查
+            int id = MemoryUtil.memGetInt(idOff + i * 4L);
+
+            // 下面这个自定义 map 方法等同于 computeIfAbsent
+            ParticleState p = stateMap.getAndCreate(id);
             p.lastSeenFrame = frameIdx;
 
-            float nx = data.getFloat(xOff + i * 4);
-            float ny = data.getFloat(yOff + i * 4);
-            float nz = data.getFloat(zOff + i * 4);
+            float nx = MemoryUtil.memGetFloat(xOff + i * 4L);
+            float ny = MemoryUtil.memGetFloat(yOff + i * 4L);
+            float nz = MemoryUtil.memGetFloat(zOff + i * 4L);
             p.x = nx;
             p.y = ny;
             p.z = nz;
@@ -373,13 +378,15 @@ public class NblStreamer implements Runnable {
             p.prevY = ny;
             p.prevZ = nz; // I-Frame Snap
 
-            p.r = data.get(rOff + i) & 0xFF;
-            p.g = data.get(gOff + i) & 0xFF;
-            p.b = data.get(bOff + i) & 0xFF;
-            p.a = data.get(aOff + i) & 0xFF;
-            p.size = (data.getShort(sizeOff + i * 2) & 0xFFFF) / 100.0f;
-            p.texID = data.get(texOff + i) & 0xFF;
-            p.seqID = data.get(seqOff + i) & 0xFF;
+            p.r = MemoryUtil.memGetByte(rOff + i) & 0xFF;
+            p.g = MemoryUtil.memGetByte(gOff + i) & 0xFF;
+            p.b = MemoryUtil.memGetByte(bOff + i) & 0xFF;
+            p.a = MemoryUtil.memGetByte(aOff + i) & 0xFF;
+            // Short 大小端注意：ByteBuffer 默认 BigEndian 因为我们用了 order(LE)，但在 DirectMem 中
+            // MemoryUtil.memGetShort 读取的是本机字节序 (通常是 LE)
+            p.size = (MemoryUtil.memGetShort(sizeOff + i * 2L) & 0xFFFF) / 100.0f;
+            p.texID = MemoryUtil.memGetByte(texOff + i) & 0xFF;
+            p.seqID = MemoryUtil.memGetByte(seqOff + i) & 0xFF;
 
             if (gpuBuffer != null)
                 writeParticleToGpuAbs(gpuBuffer, i, p);
@@ -387,32 +394,30 @@ public class NblStreamer implements Runnable {
     }
 
     private void processPFrame(ByteBuffer data, int particleCount, ByteBuffer gpuBuffer, int frameIdx) {
-        int baseOffset = data.position();
+        long baseAddr = MemoryUtil.memAddress(data) + data.position();
         int N = particleCount;
-        // P-Frame 偏移计算
-        int dxOff = baseOffset;
-        int dyOff = dxOff + (N * 2);
-        int dzOff = dyOff + (N * 2);
-        int drOff = dzOff + (N * 2);
-        int dgOff = drOff + N;
-        int dbOff = dgOff + N;
-        int daOff = dbOff + N;
-        int sizeOff = daOff + N;
-        int texOff = sizeOff + (N * 2);
-        int seqOff = texOff + N;
-        int idOff = seqOff + N;
+        // P-Frame 偏移计算 (全部转为 long 避免溢出)
+        long dxOff = baseAddr;
+        long dyOff = dxOff + (N * 2L);
+        long dzOff = dyOff + (N * 2L);
+        long drOff = dzOff + (N * 2L);
+        long dgOff = drOff + N;
+        long dbOff = dgOff + N;
+        long daOff = dbOff + N;
+        long sizeOff = daOff + N;
+        long texOff = sizeOff + (N * 2L);
+        long seqOff = texOff + N;
+        long idOff = seqOff + N;
 
         // 【阶段 1】单线程解析并更新状态
-        // 创建状态快照数组用于并行写入
-        // 注意：ParticleState 是可变对象，需要复制值
         float[][] stateSnapshots = null;
         if (gpuBuffer != null) {
-            stateSnapshots = new float[particleCount][12]; // prevX,prevY,prevZ,size,x,y,z,r,g,b,a,texLayer
+            stateSnapshots = new float[particleCount][12];
         }
 
         for (int i = 0; i < particleCount; i++) {
-            int id = data.getInt(idOff + i * 4);
-            ParticleState p = stateMap.computeIfAbsent(id, k -> new ParticleState());
+            int id = MemoryUtil.memGetInt(idOff + i * 4L);
+            ParticleState p = stateMap.getAndCreate(id);
 
             boolean isSpawn = (p.lastSeenFrame != frameIdx - 1);
             if (isSpawn) {
@@ -431,17 +436,17 @@ public class NblStreamer implements Runnable {
 
             float oldX = p.x, oldY = p.y, oldZ = p.z;
 
-            // 应用增量 (Short / 1000.0)
-            p.x += data.getShort(dxOff + i * 2) / 1000.0f;
-            p.y += data.getShort(dyOff + i * 2) / 1000.0f;
-            p.z += data.getShort(dzOff + i * 2) / 1000.0f;
-            p.r = (p.r + data.get(drOff + i)) & 0xFF;
-            p.g = (p.g + data.get(dgOff + i)) & 0xFF;
-            p.b = (p.b + data.get(dbOff + i)) & 0xFF;
-            p.a = (p.a + data.get(daOff + i)) & 0xFF;
-            p.size += data.getShort(sizeOff + i * 2) / 100.0f;
-            p.texID = (p.texID + data.get(texOff + i)) & 0xFF;
-            p.seqID = (p.seqID + data.get(seqOff + i)) & 0xFF;
+            // 应用增量 (Unsafe 读取)
+            p.x += MemoryUtil.memGetShort(dxOff + i * 2L) / 1000.0f;
+            p.y += MemoryUtil.memGetShort(dyOff + i * 2L) / 1000.0f;
+            p.z += MemoryUtil.memGetShort(dzOff + i * 2L) / 1000.0f;
+            p.r = (p.r + MemoryUtil.memGetByte(drOff + i)) & 0xFF;
+            p.g = (p.g + MemoryUtil.memGetByte(dgOff + i)) & 0xFF;
+            p.b = (p.b + MemoryUtil.memGetByte(dbOff + i)) & 0xFF;
+            p.a = (p.a + MemoryUtil.memGetByte(daOff + i)) & 0xFF;
+            p.size += MemoryUtil.memGetShort(sizeOff + i * 2L) / 100.0f;
+            p.texID = (p.texID + MemoryUtil.memGetByte(texOff + i)) & 0xFF;
+            p.seqID = (p.seqID + MemoryUtil.memGetByte(seqOff + i)) & 0xFF;
 
             if (isSpawn) {
                 p.prevX = p.x;
@@ -453,7 +458,7 @@ public class NblStreamer implements Runnable {
                 p.prevZ = oldZ;
             }
 
-            // 保存状态快照
+            // 保存状态快照 (仅当需要渲染时)
             if (gpuBuffer != null) {
                 stateSnapshots[i][0] = p.prevX;
                 stateSnapshots[i][1] = p.prevY;
@@ -473,25 +478,21 @@ public class NblStreamer implements Runnable {
         // 【阶段 2】并行写入 GPU Buffer
         if (gpuBuffer != null && stateSnapshots != null) {
             final long bufferAddr = MemoryUtil.memAddress(gpuBuffer);
-            final float[][] snapshots = stateSnapshots; // final 引用供 lambda 使用
+            final float[][] snapshots = stateSnapshots;
 
             if (particleCount >= PARALLEL_THRESHOLD) {
-                // 并行写入（粒子数较多时有收益）
-                // 使用自定义的 ForkJoinPool，避免阻塞默认的 commonPool
                 try {
                     PARALLEL_POOL.submit(() -> {
-                        IntStream.range(0, particleCount).parallel().forEach(i -> {
-                            writeParticleToGpuAbsFromSnapshot(bufferAddr, i, snapshots[i]);
+                        IntStream.range(0, particleCount).parallel().forEach(idx -> {
+                            writeParticleToGpuAbsFromSnapshot(bufferAddr, idx, snapshots[idx]);
                         });
-                    }).get(); // 等待完成
+                    }).get();
                 } catch (Exception e) {
-                    // 并行执行失败，降级到顺序写入
                     for (int i = 0; i < particleCount; i++) {
                         writeParticleToGpuAbsFromSnapshot(bufferAddr, i, snapshots[i]);
                     }
                 }
             } else {
-                // 顺序写入（粒子数较少时避免并行开销）
                 for (int i = 0; i < particleCount; i++) {
                     writeParticleToGpuAbsFromSnapshot(bufferAddr, i, snapshots[i]);
                 }
@@ -717,6 +718,96 @@ public class NblStreamer implements Runnable {
         if (buf != null && buf.capacity() > 0) {
             buf.clear();
             freeBuffers.offer(buf);
+        }
+    }
+
+    /**
+     * Primitive Int Map 专门用于减少内存占用和加速访问
+     * 针对 ParticleState 的高性能 Open Addressing 实现
+     */
+    private static class IntParticleMap {
+        private int[] keys;
+        private ParticleState[] values;
+        private int capacity;
+        private int threshold;
+        private int size;
+
+        public IntParticleMap(int initCapacity) {
+            this.capacity = tableSizeFor(initCapacity);
+            this.threshold = (int) (capacity * 0.75f);
+            this.keys = new int[capacity];
+            this.values = new ParticleState[capacity];
+            // 我们不能简单用 -1 表示空，因为 ID 可能是任意 int
+            // 但这里我们使用 values[i] == null 来判断是否为空
+        }
+
+        private static int tableSizeFor(int cap) {
+            int n = cap - 1;
+            n |= n >>> 1;
+            n |= n >>> 2;
+            n |= n >>> 4;
+            n |= n >>> 8;
+            n |= n >>> 16;
+            return (n < 0) ? 1 : (n >= 1 << 30) ? 1 << 30 : n + 1;
+        }
+
+        public ParticleState getAndCreate(int key) {
+            int idx = hash(key) & (capacity - 1);
+
+            // 线性探测
+            while (values[idx] != null) {
+                if (keys[idx] == key) {
+                    return values[idx];
+                }
+                idx = (idx + 1) & (capacity - 1);
+            }
+
+            // 遇到空槽，插入新值
+            keys[idx] = key;
+            ParticleState p = new ParticleState();
+            values[idx] = p;
+            size++;
+
+            if (size > threshold) {
+                resize();
+                // resize 之后 idx 变了，但我们已经持有 p 了，直接返回即可
+            }
+            return p;
+        }
+
+        public void clear() {
+            java.util.Arrays.fill(values, null);
+            size = 0;
+        }
+
+        private int hash(int key) {
+            return key ^ (key >>> 16);
+        }
+
+        private void resize() {
+            int newCap = capacity << 1;
+            int[] oldKeys = keys;
+            ParticleState[] oldValues = values;
+
+            keys = new int[newCap];
+            values = new ParticleState[newCap];
+            capacity = newCap;
+            threshold = (int) (newCap * 0.75f);
+
+            for (int i = 0; i < oldKeys.length; i++) {
+                if (oldValues[i] != null) {
+                    putResize(oldKeys[i], oldValues[i]);
+                }
+            }
+        }
+
+        private void putResize(int key, ParticleState val) {
+            int idx = hash(key) & (capacity - 1);
+            while (values[idx] != null) {
+                idx = (idx + 1) & (capacity - 1);
+            }
+            keys[idx] = key;
+            values[idx] = val;
         }
     }
 }

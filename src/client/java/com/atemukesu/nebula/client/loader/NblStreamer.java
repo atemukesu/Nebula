@@ -44,6 +44,9 @@ public class NblStreamer implements Runnable {
     @SuppressWarnings("unused")
     private NblHeader header;
 
+    // [v2.0 新增] 关键帧索引表
+    private int[] keyframeIndices;
+
     private final List<ParticleTextureManager.TextureEntry> textureEntries = new ArrayList<>();
     private float[] bboxMin = new float[3];
     private float[] bboxMax = new float[3];
@@ -66,6 +69,10 @@ public class NblStreamer implements Runnable {
             0);
 
     private volatile int seekTargetFrame = -1;
+    // [新增字段] 用于 runImpl 内部通信
+    private volatile int forceResetToFrame = -1;
+    private volatile int fastForwardTo = -1;
+
     private static final int QUEUE_CAPACITY = 10;
 
     // 并行处理相关
@@ -121,6 +128,21 @@ public class NblStreamer implements Runnable {
                 frameOffsets[i] = indexBuf.getLong();
                 frameSizes[i] = indexBuf.getInt();
             }
+
+            // 读取数量
+            byte[] countBytes = new byte[4];
+            raf.readFully(countBytes);
+            int keyframeCount = ByteBuffer.wrap(countBytes).order(ByteOrder.LITTLE_ENDIAN).getInt();
+
+            // 读取列表
+            ByteBuffer kfBuf = ByteBuffer.allocate(keyframeCount * 4).order(ByteOrder.LITTLE_ENDIAN);
+            raf.readFully(kfBuf.array());
+
+            keyframeIndices = new int[keyframeCount];
+            for (int i = 0; i < keyframeCount; i++) {
+                keyframeIndices[i] = kfBuf.getInt();
+            }
+
             this.header = new NblHeader(targetFps, totalFrames, textureEntries);
         }
     }
@@ -149,20 +171,70 @@ public class NblStreamer implements Runnable {
                 FileChannel channel = raf.getChannel()) {
 
             int currentFrameIdx = 0;
-            int fastForwardTo = -1;
+            // 初始化
+            fastForwardTo = -1;
+            forceResetToFrame = -1;
 
             while (isRunning.get() && currentFrameIdx < totalFrames) {
                 // Seek 处理
                 int request = seekTargetFrame;
                 if (request != -1) {
                     seekTargetFrame = -1;
-                    fastForwardTo = request;
-                    if (request < currentFrameIdx) {
-                        currentFrameIdx = 0;
+
+                    // [智能 Seek 逻辑]
+                    int targetFrame = request;
+                    if (targetFrame < 0)
+                        targetFrame = 0;
+                    if (targetFrame >= totalFrames)
+                        targetFrame = totalFrames - 1;
+
+                    // 1. 找最近关键帧
+                    int bestKeyframe = 0;
+                    if (keyframeIndices != null) {
+                        for (int kf : keyframeIndices) {
+                            if (kf <= targetFrame) {
+                                bestKeyframe = kf;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+
+                    // 2. 判断是否需要 Reset
+                    // 如果需要回退，或者相距超过 30 帧，则重置
+                    boolean needReset = (targetFrame < currentFrameIdx) || (targetFrame - currentFrameIdx > 30);
+
+                    if (needReset) {
+                        forceResetToFrame = bestKeyframe;
+                        fastForwardTo = targetFrame;
+                    } else {
+                        // 只需要快进
+                        fastForwardTo = targetFrame;
+                    }
+                }
+
+                // 处理强制重置 (Seek 到关键帧)
+                if (forceResetToFrame != -1) {
+                    int resetPoint = forceResetToFrame;
+                    forceResetToFrame = -1;
+
+                    // 1. 物理 Seek
+                    if (resetPoint >= 0 && resetPoint < totalFrames) {
+                        currentFrameIdx = resetPoint;
+                        long offset = frameOffsets[currentFrameIdx];
+                        channel.position(offset);
+
+                        // 2. 状态清零 (I-Frame 特性：不依赖旧状态)
                         stateMap.clear();
+                        // 清空管道里的旧数据
                         gpuBufferQueue.forEach(NblStreamer::releaseBuffer);
                         gpuBufferQueue.clear();
                     }
+                }
+
+                if (currentFrameIdx >= totalFrames) {
+                    // 已经是 EOF 了，但可能因为 seek 重置了 currentFrameIdx，所以需要再次检查
+                    break;
                 }
 
                 long offset = frameOffsets[currentFrameIdx];
@@ -189,10 +261,20 @@ public class NblStreamer implements Runnable {
                     continue;
                 }
 
+                // 处理快进 (只运算逻辑，不输出 Buffer)
+                // [优化] 如果 fastForwardTo 被设置，且当前帧 < fastForwardTo，则 isSkipping = true
+                boolean isSkipping = (fastForwardTo != -1) && (currentFrameIdx < fastForwardTo);
+
+                // 如果已经追上了，取消快进标记
+                if (currentFrameIdx == fastForwardTo) {
+                    fastForwardTo = -1;
+                    isSkipping = false;
+                }
+
                 // 处理帧数据
-                boolean isSkipping = currentFrameIdx < fastForwardTo;
                 ByteBuffer gpuBuffer = processFrameData(cachedDecompressedBuffer, isSkipping, currentFrameIdx);
 
+                // 只有不跳过的时候，才塞入队列
                 if (!isSkipping && gpuBuffer != null) {
                     try {
                         gpuBufferQueue.put(gpuBuffer);
@@ -214,14 +296,19 @@ public class NblStreamer implements Runnable {
                         break;
                     }
                     isFinished = true;
+                    // 等待 Seek 信号或退出
                     while (isRunning.get() && seekTargetFrame == -1) {
                         try {
                             Thread.sleep(10);
                         } catch (InterruptedException ignored) {
                         }
                     }
-                    if (seekTargetFrame != -1)
+                    if (seekTargetFrame != -1) {
                         isFinished = false;
+                        // 移除这里的 EOF 标记防止重复？
+                        // 实际上 blocking queue 里的 EOF 已经被 consumer 读走或者还在那里。
+                        // 如果 seek 重启，queue 会在 reset 时 clear。
+                    }
                 }
             }
         } catch (Exception e) {
@@ -318,7 +405,10 @@ public class NblStreamer implements Runnable {
         // 【阶段 1】单线程解析并更新状态
         // 创建状态快照数组用于并行写入
         // 注意：ParticleState 是可变对象，需要复制值
-        float[][] stateSnapshots = new float[particleCount][12]; // prevX,prevY,prevZ,size,x,y,z,r,g,b,a,texLayer
+        float[][] stateSnapshots = null;
+        if (gpuBuffer != null) {
+            stateSnapshots = new float[particleCount][12]; // prevX,prevY,prevZ,size,x,y,z,r,g,b,a,texLayer
+        }
 
         for (int i = 0; i < particleCount; i++) {
             int id = data.getInt(idOff + i * 4);
@@ -364,22 +454,24 @@ public class NblStreamer implements Runnable {
             }
 
             // 保存状态快照
-            stateSnapshots[i][0] = p.prevX;
-            stateSnapshots[i][1] = p.prevY;
-            stateSnapshots[i][2] = p.prevZ;
-            stateSnapshots[i][3] = p.size;
-            stateSnapshots[i][4] = p.x;
-            stateSnapshots[i][5] = p.y;
-            stateSnapshots[i][6] = p.z;
-            stateSnapshots[i][7] = p.r;
-            stateSnapshots[i][8] = p.g;
-            stateSnapshots[i][9] = p.b;
-            stateSnapshots[i][10] = p.a;
-            stateSnapshots[i][11] = ParticleTextureManager.calculateLayerIndex(p.texID, p.seqID);
+            if (gpuBuffer != null) {
+                stateSnapshots[i][0] = p.prevX;
+                stateSnapshots[i][1] = p.prevY;
+                stateSnapshots[i][2] = p.prevZ;
+                stateSnapshots[i][3] = p.size;
+                stateSnapshots[i][4] = p.x;
+                stateSnapshots[i][5] = p.y;
+                stateSnapshots[i][6] = p.z;
+                stateSnapshots[i][7] = p.r;
+                stateSnapshots[i][8] = p.g;
+                stateSnapshots[i][9] = p.b;
+                stateSnapshots[i][10] = p.a;
+                stateSnapshots[i][11] = ParticleTextureManager.calculateLayerIndex(p.texID, p.seqID);
+            }
         }
 
         // 【阶段 2】并行写入 GPU Buffer
-        if (gpuBuffer != null) {
+        if (gpuBuffer != null && stateSnapshots != null) {
             final long bufferAddr = MemoryUtil.memAddress(gpuBuffer);
             final float[][] snapshots = stateSnapshots; // final 引用供 lambda 使用
 

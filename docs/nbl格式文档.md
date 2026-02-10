@@ -59,7 +59,24 @@ struct TextureEntry {
 | `ChunkOffset` | `uint64` | 该帧压缩数据块相对于**文件起始处**的字节偏移量 |
 | `ChunkSize` | `uint32` | 该帧压缩数据块的字节大小 |
 
-### **4. 帧数据块 (Frame Data Chunk)**
+
+
+---
+
+### **4. 关键帧索引表 (Keyframe Index Table)**
+
+*紧接在帧索引表之后。*
+
+**目的:** 记录所有 I-Frame (Type 0) 的帧序号，供快速检索。
+
+| 字段名 (Field) | 类型 (Type) | 描述 (Description) |
+| --- | --- | --- |
+| `KeyframeCount` | `uint32` | 关键帧的总数量 (K) |
+| `KeyframeIndices` | `uint32[K]` | 升序排列的关键帧帧号列表 (例如 0, 60, 120...) |
+
+---
+
+### **5. 帧数据块 (Frame Data Chunk)**
 
 *位于文件剩余区域。通过 Seek Table 定位。*
 
@@ -83,7 +100,7 @@ struct TextureEntry {
 
 ---
 
-### **4.2 数据体: Type 0 (I-Frame 全量帧)**
+### **5.2 数据体: Type 0 (I-Frame 全量帧)**
 
 *仅当 `FrameType == 0` 时使用。*
 *采用 **SoA (Structure of Arrays)** 纯数组布局，数据紧密排列，无额外 Padding。*
@@ -124,7 +141,7 @@ struct TextureEntry {
 
 ---
 
-### **4.3 数据体: Type 1 (P-Frame 差分帧)**
+### **5.3 数据体: Type 1 (P-Frame 差分帧)**
 
 *仅当 `FrameType == 1` 时使用。*
 *同样遵循 SoA 布局，顺序与 I-Frame 逻辑一致。*
@@ -148,7 +165,7 @@ struct TextureEntry {
 | 5 | `SeqDeltas` | `int8` | `N * 1` | `N` 个 dSeq |
 | 6 | `ParticleIDs` | `int32` | `N * 4` | `N` 个粒子 ID (用于匹配上一帧状态) |
 
-### **5. 开发者实现必读 (The Rules)**
+### **6. 开发者实现必读 (The Rules)**
 
 #### **A. 粒子生命周期逻辑 (Lifecycle Logic)**
 

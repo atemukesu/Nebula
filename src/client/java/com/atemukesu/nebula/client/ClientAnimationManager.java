@@ -210,9 +210,23 @@ public class ClientAnimationManager {
             // 确保纹理已加载（第一次渲染时）
             instance.ensureTexturesLoaded();
 
-            // 【关键优化】即使不可见，也必须调用 getNextFrame
-            // 这保证了后台 IO 线程持续读取数据，renderedFrames 紧跟当前时间
-            // 从而避免因长时间不可见导致时间差过大，触发 Seek 操作引发卡顿
+            // [核心] 智能休眠控制
+            if (!isVisible) {
+                // 不可见时：完全不调用 getNextFrame()，让 IO 线程因队列满而休眠
+                continue;
+            }
+
+            // [核心] 唤醒与同步
+            // 当再次可见时，检查是否需要 Seek
+            double now = ReplayModUtil.getCurrentAnimationTime();
+            double elapsed = now - instance.startSeconds;
+            int expectedFrame = (int) (elapsed * instance.targetFps);
+
+            if (Math.abs(instance.renderedFrames - expectedFrame) > 5) {
+                instance.streamer.seek(expectedFrame);
+                instance.renderedFrames = expectedFrame;
+            }
+
             ByteBuffer frameData = instance.getNextFrame();
 
             if (isVisible && frameData != null && frameData.remaining() > 0) {
@@ -228,9 +242,6 @@ public class ClientAnimationManager {
                 float relZ = (float) (origin.z - cameraPos.z);
 
                 // 计算插值系数
-                double now = ReplayModUtil.getCurrentAnimationTime();
-                double start = instance.startSeconds;
-                double elapsed = now - start;
                 double currentFrameFloat = elapsed * instance.targetFps;
 
                 float partialTicks = (float) (currentFrameFloat - (instance.renderedFrames - 1));
@@ -389,9 +400,23 @@ public class ClientAnimationManager {
             // 确保纹理已加载（第一次渲染时）
             instance.ensureTexturesLoaded();
 
-            // 【关键优化】即使不可见，也必须调用 getNextFrame
-            // 这保证了后台 IO 线程持续读取数据，renderedFrames 紧跟当前时间
-            // 从而避免因长时间不可见导致时间差过大，触发 Seek 操作引发卡顿
+            // [核心] 智能休眠控制
+            if (!isVisible) {
+                // 不可见时：完全不调用 getNextFrame()，让 IO 线程因队列满而休眠
+                continue;
+            }
+
+            // [核心] 唤醒与同步
+            // 当再次可见时，检查是否需要 Seek
+            double now = ReplayModUtil.getCurrentAnimationTime();
+            double elapsed = now - instance.startSeconds;
+            int expectedFrame = (int) (elapsed * instance.targetFps);
+
+            if (Math.abs(instance.renderedFrames - expectedFrame) > 5) {
+                instance.streamer.seek(expectedFrame);
+                instance.renderedFrames = expectedFrame;
+            }
+
             ByteBuffer frameData = instance.getNextFrame();
 
             if (isVisible && frameData != null && frameData.remaining() > 0) {
@@ -409,9 +434,7 @@ public class ClientAnimationManager {
                 float relZ = (float) (origin.z - cameraPos.z);
 
                 // 计算插值系数
-                double now = ReplayModUtil.getCurrentAnimationTime();
-                double start = instance.startSeconds;
-                double elapsed = now - start;
+                // (now, elapsed 均已在上文计算)
                 double currentFrameFloat = elapsed * instance.targetFps;
 
                 float partialTicks = (float) (currentFrameFloat - (instance.renderedFrames - 1));
@@ -594,7 +617,23 @@ public class ClientAnimationManager {
             // 确保纹理已加载（第一次渲染时）
             instance.ensureTexturesLoaded();
 
-            // 【关键优化】即使不可见，也必须调用 getNextFrame
+            // [核心] 智能休眠控制
+            if (!isVisible) {
+                // 不可见时：完全不调用 getNextFrame()，让 IO 线程因队列满而休眠
+                continue;
+            }
+
+            // [核心] 唤醒与同步
+            // 当再次可见时，检查是否需要 Seek
+            double now = ReplayModUtil.getCurrentAnimationTime();
+            double elapsed = now - instance.startSeconds;
+            int expectedFrame = (int) (elapsed * instance.targetFps);
+
+            if (Math.abs(instance.renderedFrames - expectedFrame) > 5) {
+                instance.streamer.seek(expectedFrame);
+                instance.renderedFrames = expectedFrame;
+            }
+
             ByteBuffer frameData = instance.getNextFrame();
 
             // 使用 slice() 创建缓冲区视图
@@ -613,9 +652,7 @@ public class ClientAnimationManager {
                 float relZ = (float) (origin.z - cameraPos.z);
 
                 // 计算插值系数
-                double now = ReplayModUtil.getCurrentAnimationTime();
-                double start = instance.startSeconds;
-                double elapsed = now - start;
+                // (now, elapsed 均已在上文计算)
                 double currentFrameFloat = elapsed * instance.targetFps;
 
                 float partialTicks = (float) (currentFrameFloat - (instance.renderedFrames - 1));

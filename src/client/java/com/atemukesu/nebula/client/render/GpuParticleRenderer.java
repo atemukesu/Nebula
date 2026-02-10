@@ -466,6 +466,11 @@ public class GpuParticleRenderer {
         if (uRenderPass != -1)
             GL20.glUniform1i(uRenderPass, 1); // Translucent Pass
 
+        // 动态设置 HDR 强度: Iris 开启时增强亮度(1.5)，关闭时保持原色(1.0)
+        float currentEmissive = IrisUtil.isIrisRenderingActive() ? 1.5f : 1.0f;
+        if (uEmissiveStrength != -1)
+            GL20.glUniform1f(uEmissiveStrength, currentEmissive);
+
         RenderSystem.depthMask(false); // OIT 核心：不写深度
         RenderSystem.enableBlend();
         // OIT 专用混合模式
@@ -577,8 +582,13 @@ public class GpuParticleRenderer {
             GL20.glUniform3f(uOrigin, originX, originY, originZ);
         if (uPartialTicks != -1)
             GL20.glUniform1f(uPartialTicks, partialTicks);
+        if (uPartialTicks != -1)
+            GL20.glUniform1f(uPartialTicks, partialTicks);
+
+        // 动态设置 HDR 强度: Iris 开启时增强亮度(1.5)，关闭时保持原色(1.0)
+        float currentEmissive = IrisUtil.isIrisRenderingActive() ? 1.5f : 1.0f;
         if (uEmissiveStrength != -1)
-            GL20.glUniform1f(uEmissiveStrength, emissiveStrength);
+            GL20.glUniform1f(uEmissiveStrength, currentEmissive);
 
         // 纹理设置
         if (useTexture && ParticleTextureManager.isInitialized()) {
@@ -681,8 +691,11 @@ public class GpuParticleRenderer {
             // ==========================================
             // Pass 2: 透明粒子 (Translucent)
             // ==========================================
+            // ==========================================
+            // Pass 2: 透明粒子 (Translucent)
+            // ==========================================
             if (uRenderPass != -1)
-                GL20.glUniform1i(uRenderPass, 1); // Translucent Pass
+                GL20.glUniform1i(uRenderPass, 2); // Translucent Pass (Mode 2 = Standard HDR/LDR output)
 
             RenderSystem.depthMask(false); // 透明粒子不写深度
 

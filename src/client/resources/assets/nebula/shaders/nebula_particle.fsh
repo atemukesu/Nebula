@@ -64,15 +64,16 @@ void main() {
     if (uRenderPass == 1) { // Translucent Pass (OIT)
         float alpha = clamp(baseColor.a, 0.0, 1.0);
         
-        // Weighted Blended OIT Weight Function (与 MadParticles 一致)
-        // 关键：在 OIT 积累中使用原始颜色，不使用 HDR 处理的颜色
-        // HDR 处理会在合成后由光影包处理
+        // Weighted Blended OIT Weight Function
+        // Modified for RGBA16F stability (max value ~65504)
+        // Lowered max weight from 3000 to 100 to prevent overflow with overlapping particles
+        // Previous: 3000 * 22 = 66000 > 65504 (Overflow!)
+        // Current: 100 * 600 = 60000 < 65504 (Safe)
         float weight = clamp(
             pow(min(1.0, alpha * 5.0) + 0.01, 3.0)
             * pow(1.0 - gl_FragCoord.z * 0.9, 3.0)
-            * min(2.0, gl_FragCoord.w)
-            * 1e6,
-            1e-2, 3e3
+            * 250.0,
+            1e-2, 100.0
         );
 
         // Accumulator (Location 0)

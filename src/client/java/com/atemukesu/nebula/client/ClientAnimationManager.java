@@ -124,8 +124,9 @@ public class ClientAnimationManager {
         if (client.world == null || client.player == null)
             return;
 
+        ModConfig config = ModConfig.getInstance();
         // [Config Control] 如果不在 Replay 渲染模式且配置关闭了游戏内渲染，则跳过
-        if (!CurrentTimeUtil.isRendering() && !ModConfig.getInstance().shouldRenderInGame()) {
+        if (!CurrentTimeUtil.isRendering() && !config.shouldRenderInGame()) {
             return;
         }
 
@@ -146,9 +147,11 @@ public class ClientAnimationManager {
         calculateCameraVectors(camera, cameraRight, cameraUp);
 
         // 性能统计
-        boolean shouldCollectStats = ModConfig.getInstance().getShowDebugHud();
+        boolean shouldCollectStats = config.getShowDebugHud();
+        PerformanceStats stats = null;
         if (shouldCollectStats) {
-            PerformanceStats.getInstance().beginFrame();
+            stats = PerformanceStats.getInstance();
+            stats.beginFrame();
         }
 
         int totalParticles = 0;
@@ -161,7 +164,9 @@ public class ClientAnimationManager {
         }
 
         // Global OIT Setup or Standard Batch Setup
-        boolean isOIT = ModConfig.getInstance().getBlendMode() == BlendMode.OIT;
+        boolean isOIT = config.getBlendMode() == BlendMode.OIT;
+        CullingBehavior behavior = config.getCullingBehavior();
+        double now = CurrentTimeUtil.getCurrentAnimationTime();
         int targetFboId = -1;
         if (!renderList.isEmpty()) {
             if (isOIT) {
@@ -214,14 +219,13 @@ public class ClientAnimationManager {
             // [核心] 智能休眠控制
             if (!isVisible) {
                 // Determine behavior based on config
-                if (ModConfig.getInstance().getCullingBehavior() == CullingBehavior.PAUSE_AND_HIDE) {
+                if (behavior == CullingBehavior.PAUSE_AND_HIDE) {
                     continue;
                 }
             }
 
             // [核心] 唤醒与同步
             // 当再次可见时，检查是否需要 Seek
-            double now = CurrentTimeUtil.getCurrentAnimationTime();
             double elapsed = now - instance.startSeconds;
             int expectedFrame = (int) (elapsed * instance.targetFps);
 
@@ -290,17 +294,16 @@ public class ClientAnimationManager {
 
         currentParticleCount = totalParticles;
 
-        if (shouldCollectStats) {
+        if (shouldCollectStats && stats != null) {
             // 更新性能统计
-            PerformanceStats stats = PerformanceStats.getInstance();
             stats.setParticleCount(totalParticles);
             stats.setInstanceCount(renderedInstancesCount);
             float effectiveEmissive = IrisUtil.isIrisRenderingActive()
-                    ? ModConfig.getInstance().getEmissiveStrength()
+                    ? config.getEmissiveStrength()
                     : 1.0f; // 和实际值保持一致
 
             stats.setEmissiveStrength(effectiveEmissive);
-            stats.setRenderInGame(ModConfig.getInstance().shouldRenderInGame());
+            stats.setRenderInGame(config.shouldRenderInGame());
             stats.endFrame();
         }
     }
@@ -322,14 +325,17 @@ public class ClientAnimationManager {
         if (client.world == null || client.player == null)
             return;
 
+        ModConfig config = ModConfig.getInstance();
         // 开始帧计时
-        boolean shouldCollectStats = ModConfig.getInstance().getShowDebugHud();
+        boolean shouldCollectStats = config.getShowDebugHud();
+        PerformanceStats stats = null;
         if (shouldCollectStats) {
-            PerformanceStats.getInstance().beginFrame();
+            stats = PerformanceStats.getInstance();
+            stats.beginFrame();
         }
 
         // [Config Control] 如果不在 Replay 渲染模式且配置关闭了游戏内渲染，则跳过
-        if (!CurrentTimeUtil.isRendering() && !ModConfig.getInstance().shouldRenderInGame()) {
+        if (!CurrentTimeUtil.isRendering() && !config.shouldRenderInGame()) {
             return;
         }
 
@@ -365,7 +371,9 @@ public class ClientAnimationManager {
         }
 
         // Global OIT Setup or Standard Batch Setup
-        boolean isOIT = ModConfig.getInstance().getBlendMode() == BlendMode.OIT;
+        boolean isOIT = config.getBlendMode() == BlendMode.OIT;
+        CullingBehavior behavior = config.getCullingBehavior();
+        double now = CurrentTimeUtil.getCurrentAnimationTime();
         int targetFboId = -1;
         if (!renderList.isEmpty()) {
             if (isOIT) {
@@ -406,14 +414,13 @@ public class ClientAnimationManager {
             // [核心] 智能休眠控制
             if (!isVisible) {
                 // Determine behavior based on config
-                if (ModConfig.getInstance().getCullingBehavior() == CullingBehavior.PAUSE_AND_HIDE) {
+                if (behavior == CullingBehavior.PAUSE_AND_HIDE) {
                     continue;
                 }
             }
 
             // [核心] 唤醒与同步
             // 当再次可见时，检查是否需要 Seek
-            double now = CurrentTimeUtil.getCurrentAnimationTime();
             double elapsed = now - instance.startSeconds;
             int expectedFrame = (int) (elapsed * instance.targetFps);
 
@@ -477,17 +484,16 @@ public class ClientAnimationManager {
 
         currentParticleCount = totalParticles;
 
-        if (shouldCollectStats) {
+        if (shouldCollectStats && stats != null) {
             // 更新性能统计
-            PerformanceStats stats = PerformanceStats.getInstance();
             stats.setParticleCount(totalParticles);
             stats.setInstanceCount(renderedInstancesCount);
             float effectiveEmissive = IrisUtil.isIrisRenderingActive()
-                    ? ModConfig.getInstance().getEmissiveStrength()
+                    ? config.getEmissiveStrength()
                     : 1.0f;
 
             stats.setEmissiveStrength(effectiveEmissive);
-            stats.setRenderInGame(ModConfig.getInstance().shouldRenderInGame());
+            stats.setRenderInGame(config.shouldRenderInGame());
             stats.endFrame();
         }
 
@@ -513,14 +519,17 @@ public class ClientAnimationManager {
         if (client.world == null || client.player == null)
             return;
 
+        ModConfig config = ModConfig.getInstance();
         // 开始帧计时
-        boolean shouldCollectStats = ModConfig.getInstance().getShowDebugHud();
+        boolean shouldCollectStats = config.getShowDebugHud();
+        PerformanceStats stats = null;
         if (shouldCollectStats) {
-            PerformanceStats.getInstance().beginFrame();
+            stats = PerformanceStats.getInstance();
+            stats.beginFrame();
         }
 
         // [Config Control] 如果不在 Replay 渲染模式且配置关闭了游戏内渲染，则跳过
-        if (!CurrentTimeUtil.isRendering() && !ModConfig.getInstance().shouldRenderInGame()) {
+        if (!CurrentTimeUtil.isRendering() && !config.shouldRenderInGame()) {
             return;
         }
 
@@ -572,7 +581,9 @@ public class ClientAnimationManager {
         }
 
         // Global OIT Setup or Standard Batch Setup
-        boolean isOIT = ModConfig.getInstance().getBlendMode() == BlendMode.OIT;
+        boolean isOIT = config.getBlendMode() == BlendMode.OIT;
+        CullingBehavior behavior = config.getCullingBehavior();
+        double now = CurrentTimeUtil.getCurrentAnimationTime();
         int targetFboId = -1;
         if (!renderList.isEmpty()) {
             if (isOIT) {
@@ -625,14 +636,13 @@ public class ClientAnimationManager {
             // [核心] 智能休眠控制
             if (!isVisible) {
                 // Determine behavior based on config
-                if (ModConfig.getInstance().getCullingBehavior() == CullingBehavior.PAUSE_AND_HIDE) {
+                if (behavior == CullingBehavior.PAUSE_AND_HIDE) {
                     continue;
                 }
             }
 
             // [核心] 唤醒与同步
             // 当再次可见时，检查是否需要 Seek
-            double now = CurrentTimeUtil.getCurrentAnimationTime();
             double elapsed = now - instance.startSeconds;
             int expectedFrame = (int) (elapsed * instance.targetFps);
 
@@ -705,17 +715,16 @@ public class ClientAnimationManager {
             }
         }
 
-        if (shouldCollectStats) {
+        if (shouldCollectStats && stats != null) {
             // 更新性能统计
-            PerformanceStats stats = PerformanceStats.getInstance();
             stats.setParticleCount(totalParticles);
             stats.setInstanceCount(renderedInstancesCount);
             float effectiveEmissive = IrisUtil.isIrisRenderingActive()
-                    ? ModConfig.getInstance().getEmissiveStrength()
+                    ? config.getEmissiveStrength()
                     : 1.0f;
 
             stats.setEmissiveStrength(effectiveEmissive);
-            stats.setRenderInGame(ModConfig.getInstance().shouldRenderInGame());
+            stats.setRenderInGame(config.shouldRenderInGame());
             stats.endFrame();
         }
     }

@@ -1,5 +1,7 @@
 package com.atemukesu.nebula.config;
 
+import com.atemukesu.nebula.client.enums.BlendMode;
+
 public class ModConfig {
     private static ModConfig INSTANCE;
 

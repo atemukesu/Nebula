@@ -1,7 +1,7 @@
 package com.atemukesu.nebula.client.render;
 
+import com.atemukesu.nebula.client.enums.BlendMode;
 import com.atemukesu.nebula.client.gui.tools.PerformanceStats;
-import com.atemukesu.nebula.config.BlendMode;
 import com.atemukesu.nebula.config.ModConfig;
 import com.atemukesu.nebula.Nebula;
 import com.mojang.blaze3d.platform.GlStateManager;

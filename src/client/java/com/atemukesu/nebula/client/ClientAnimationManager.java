@@ -1,5 +1,6 @@
 package com.atemukesu.nebula.client;
 
+import com.atemukesu.nebula.client.enums.BlendMode;
 import com.atemukesu.nebula.client.gui.tools.PerformanceStats;
 import com.atemukesu.nebula.Nebula;
 import com.atemukesu.nebula.client.loader.NblStreamer;
@@ -8,7 +9,6 @@ import com.atemukesu.nebula.client.render.GpuParticleRenderer;
 import com.atemukesu.nebula.client.util.IrisUtil;
 import com.atemukesu.nebula.client.util.ReplayModUtil;
 import com.atemukesu.nebula.config.ModConfig;
-import com.atemukesu.nebula.config.BlendMode;
 import com.atemukesu.nebula.particle.loader.AnimationLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.render.Camera;
@@ -213,6 +213,9 @@ public class ClientAnimationManager {
             // [核心] 智能休眠控制
             if (!isVisible) {
                 // 不可见时：完全不调用 getNextFrame()，让 IO 线程因队列满而休眠
+                // 天啊，这会带来性能问题和严重的可感的等待闪烁
+                // 干脆交给用户吧
+                // TODO: 用户可以设置是否休眠，作为一个配置项
                 continue;
             }
 

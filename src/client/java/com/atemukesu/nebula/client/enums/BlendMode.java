@@ -1,4 +1,4 @@
-package com.atemukesu.nebula.config;
+package com.atemukesu.nebula.client.enums;
 
 /**
  * 粒子混合模式枚举

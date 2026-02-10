@@ -1,5 +1,7 @@
 package com.atemukesu.nebula.config;
 
+import com.atemukesu.nebula.client.enums.BlendMode;
+
 import dev.isxander.yacl3.api.*;
 import dev.isxander.yacl3.api.controller.BooleanControllerBuilder;
 import dev.isxander.yacl3.api.controller.EnumControllerBuilder;

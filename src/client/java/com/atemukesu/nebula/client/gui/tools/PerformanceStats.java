@@ -218,7 +218,7 @@ public class PerformanceStats {
 
     // ========== 调试数据 ==========
     private double originX, originY, originZ;
-    private boolean shouldBindFramebuffer;
+    private int targetFboId = -1;
 
     public void setOrigin(double x, double y, double z) {
         this.originX = x;
@@ -226,8 +226,8 @@ public class PerformanceStats {
         this.originZ = z;
     }
 
-    public void setShouldBindFramebuffer(boolean bind) {
-        this.shouldBindFramebuffer = bind;
+    public void setTargetFboId(int id) {
+        this.targetFboId = id;
     }
 
     public double getOriginX() {
@@ -242,8 +242,8 @@ public class PerformanceStats {
         return originZ;
     }
 
-    public boolean shouldBindFramebuffer() {
-        return shouldBindFramebuffer;
+    public int getTargetFboId() {
+        return targetFboId;
     }
 
     // ========== New Stats ==========

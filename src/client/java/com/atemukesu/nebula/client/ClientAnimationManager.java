@@ -159,13 +159,19 @@ public class ClientAnimationManager {
             renderList = new ArrayList<>(activeInstances);
         }
 
-        // Global OIT Setup
+        // Global OIT Setup or Standard Batch Setup
         boolean isOIT = ModConfig.getInstance().getBlendMode() == BlendMode.OIT;
         int targetFboId = -1;
-        if (isOIT && !renderList.isEmpty()) {
-            targetFboId = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
-            GpuParticleRenderer.beginOIT(targetFboId, client.getWindow().getFramebufferWidth(),
-                    client.getWindow().getFramebufferHeight());
+        if (!renderList.isEmpty()) {
+            if (isOIT) {
+                targetFboId = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
+                GpuParticleRenderer.beginOIT(targetFboId, client.getWindow().getFramebufferWidth(),
+                        client.getWindow().getFramebufferHeight());
+            } else {
+                int currentFbo = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
+                GpuParticleRenderer.beginStandardRendering(mvMatrix, projectionMatrix, cameraRight, cameraUp,
+                        currentFbo);
+            }
         }
 
         // 对于 Iris 路径，使用简化的距离剔除
@@ -243,25 +249,24 @@ public class ClientAnimationManager {
                             true,
                             partialTicks);
                 } else {
-                    // 【Iris 兼容】传入 bindFramebuffer=false，保持 Iris 的渲染目标
-                    GpuParticleRenderer.render(
+                    GpuParticleRenderer.renderStandardBatch(
                             readBuffer,
                             particleCount,
-                            mvMatrix,
-                            projectionMatrix,
-                            cameraRight,
-                            cameraUp,
                             relX,
                             relY,
                             relZ,
-                            partialTicks,
-                            false); // Iris 环境下不绑定 MC 主 FBO
+                            true,
+                            partialTicks);
                 }
             }
         }
 
-        if (isOIT && !renderList.isEmpty()) {
-            GpuParticleRenderer.endOITAndComposite(targetFboId);
+        if (!renderList.isEmpty()) {
+            if (isOIT) {
+                GpuParticleRenderer.endOITAndComposite(targetFboId);
+            } else {
+                GpuParticleRenderer.endStandardRendering();
+            }
         }
 
         currentParticleCount = totalParticles;
@@ -336,13 +341,19 @@ public class ClientAnimationManager {
             renderList = new ArrayList<>(activeInstances);
         }
 
-        // Global OIT Setup
+        // Global OIT Setup or Standard Batch Setup
         boolean isOIT = ModConfig.getInstance().getBlendMode() == BlendMode.OIT;
         int targetFboId = -1;
-        if (isOIT && !renderList.isEmpty()) {
-            targetFboId = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
-            GpuParticleRenderer.beginOIT(targetFboId, client.getWindow().getFramebufferWidth(),
-                    client.getWindow().getFramebufferHeight());
+        if (!renderList.isEmpty()) {
+            if (isOIT) {
+                targetFboId = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
+                GpuParticleRenderer.beginOIT(targetFboId, client.getWindow().getFramebufferWidth(),
+                        client.getWindow().getFramebufferHeight());
+            } else {
+                int currentFbo = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
+                GpuParticleRenderer.beginStandardRendering(mvMatrix, projectionMatrix, cameraRight, cameraUp,
+                        currentFbo);
+            }
         }
 
         // 最大渲染距离（用于距离剔除备用）
@@ -409,18 +420,14 @@ public class ClientAnimationManager {
                             true,
                             partialTicks);
                 } else {
-                    GpuParticleRenderer.render(
+                    GpuParticleRenderer.renderStandardBatch(
                             readBuffer,
                             particleCount,
-                            mvMatrix,
-                            projectionMatrix,
-                            cameraRight,
-                            cameraUp,
                             relX,
                             relY,
                             relZ,
-                            partialTicks,
-                            bindFramebuffer);
+                            true,
+                            partialTicks);
                 }
             }
 
@@ -437,10 +444,12 @@ public class ClientAnimationManager {
             }
         }
 
-        if (isOIT && !renderList.isEmpty())
-
-        {
-            GpuParticleRenderer.endOITAndComposite(targetFboId);
+        if (!renderList.isEmpty()) {
+            if (isOIT) {
+                GpuParticleRenderer.endOITAndComposite(targetFboId);
+            } else {
+                GpuParticleRenderer.endStandardRendering();
+            }
         }
     }
 
@@ -515,13 +524,19 @@ public class ClientAnimationManager {
             renderList = new ArrayList<>(activeInstances);
         }
 
-        // Global OIT Setup
+        // Global OIT Setup or Standard Batch Setup
         boolean isOIT = ModConfig.getInstance().getBlendMode() == BlendMode.OIT;
         int targetFboId = -1;
-        if (isOIT && !renderList.isEmpty()) {
-            targetFboId = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
-            GpuParticleRenderer.beginOIT(targetFboId, client.getWindow().getFramebufferWidth(),
-                    client.getWindow().getFramebufferHeight());
+        if (!renderList.isEmpty()) {
+            if (isOIT) {
+                targetFboId = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
+                GpuParticleRenderer.beginOIT(targetFboId, client.getWindow().getFramebufferWidth(),
+                        client.getWindow().getFramebufferHeight());
+            } else {
+                int currentFbo = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
+                GpuParticleRenderer.beginStandardRendering(modelViewMatrix, projMatrix, cameraRight, cameraUp,
+                        currentFbo);
+            }
         }
 
         // 获取视锥用于剔除
@@ -603,26 +618,26 @@ public class ClientAnimationManager {
                             true,
                             partialTicks);
                 } else {
-                    GpuParticleRenderer.render(
+                    GpuParticleRenderer.renderStandardBatch(
                             readBuffer,
                             particleCount,
-                            modelViewMatrix,
-                            projMatrix,
-                            cameraRight,
-                            cameraUp,
                             relX,
                             relY,
                             relZ,
-                            partialTicks,
-                            true); // 原版模式绑定 MC 主 FBO
+                            true,
+                            partialTicks);
                 }
             }
         }
 
         currentParticleCount = totalParticles;
 
-        if (isOIT && !renderList.isEmpty()) {
-            GpuParticleRenderer.endOITAndComposite(targetFboId);
+        if (!renderList.isEmpty()) {
+            if (isOIT) {
+                GpuParticleRenderer.endOITAndComposite(targetFboId);
+            } else {
+                GpuParticleRenderer.endStandardRendering();
+            }
         }
 
         if (shouldCollectStats) {

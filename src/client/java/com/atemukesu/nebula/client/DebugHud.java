@@ -134,8 +134,8 @@ public class DebugHud {
                     String.format("SSBO: %d, size: %d bytes", stats.getSsbo(), stats.getUsedBufferBytes()), 0xCCCCCC));
             cachedLines.add(new CachedLine(String.format("Origin: (%.2f, %.2f, %.2f)", stats.getOriginX(),
                     stats.getOriginY(), stats.getOriginZ()), 0xCCCCCC));
-            cachedLines.add(new CachedLine(String.format("bindFramebuffer: %b", stats.shouldBindFramebuffer()),
-                    stats.shouldBindFramebuffer() ? 0xAAFFAA : 0xFFAAAA));
+            cachedLines.add(new CachedLine(String.format("Target FBO: %d", stats.getTargetFboId()),
+                    stats.getTargetFboId() >= 0 ? 0xAAFFAA : 0xFFAAAA));
             cachedLines.add(new CachedLine(
                     String.format("Emissive: %.1f | Game Render: %b", stats.getEmissiveStrength(),
                             stats.isRenderInGame()),

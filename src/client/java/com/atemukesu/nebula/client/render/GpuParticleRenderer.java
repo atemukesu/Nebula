@@ -259,6 +259,7 @@ public class GpuParticleRenderer {
     private static int globalOitViewportWidth = 0;
     @SuppressWarnings("unused")
     private static int globalOitViewportHeight = 0;
+    private static final int[] oitCachedViewport = new int[4];
 
     /**
      * 开始 OIT 全局阶段
@@ -280,7 +281,9 @@ public class GpuParticleRenderer {
 
         // 调整 OIT FBO 大小
         oitFbo.resize(viewportWidth, viewportHeight);
-        // 注意：这里不绑定 OIT FBO，因为 Pass 1 需要绘制到主 FBO
+
+        // Backup Viewport
+        GL11.glGetIntegerv(GL11.GL_VIEWPORT, oitCachedViewport);
     }
 
     /**
@@ -299,7 +302,11 @@ public class GpuParticleRenderer {
         RenderSystem.assertOnRenderThread();
 
         // Pass 3: Composite
-        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, targetFboId);
+        if (!IrisUtil.isIrisRenderingActive() && targetFboId == MinecraftClient.getInstance().getFramebuffer().fbo) {
+            MinecraftClient.getInstance().getFramebuffer().beginWrite(false);
+        } else {
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, targetFboId);
+        }
 
         GL20.glUseProgram(oitProgram);
         RenderSystem.depthMask(false);
@@ -358,6 +365,9 @@ public class GpuParticleRenderer {
         RenderSystem.bindTexture(0);
         RenderSystem.activeTexture(GL13.GL_TEXTURE0);
         RenderSystem.bindTexture(0);
+
+        // 6. Restore Viewport
+        GL11.glViewport(oitCachedViewport[0], oitCachedViewport[1], oitCachedViewport[2], oitCachedViewport[3]);
     }
 
     /**
@@ -499,7 +509,7 @@ public class GpuParticleRenderer {
         stats.setPmbSupported(pmbSupported);
         stats.setUsingFallback(useFallback);
         stats.setIrisMode(IrisUtil.isIrisRenderingActive());
-        stats.setShouldBindFramebuffer(true); // OIT always explicitly binds FBOs
+        stats.setTargetFboId(globalOitTargetFboId);
         stats.setOrigin(originX, originY, originZ);
         stats.setLastGlError(GL11.glGetError(), "Post-OIT-Batch");
 
@@ -513,30 +523,127 @@ public class GpuParticleRenderer {
         }
     }
 
-    /**
-     * 执行 SSBO 实例化渲染
-     * 
-     * @param data            粒子数据
-     * @param particleCount   粒子数量
-     * @param modelViewMatrix 模型视图矩阵
-     * @param projMatrix      投影矩阵
-     * @param cameraRight     相机右向量
-     * @param cameraUp        相机上向量
-     * @param originX         原点 X 坐标
-     * @param originY         原点 Y 坐标
-     * @param originZ         原点 Z 坐标
-     * @param useTexture      是否使用纹理
-     * @param partialTicks    部分 ticks
-     * @param bindFramebuffer 是否绑定 MC 主 Framebuffer
-     */
-    public static void renderInstanced(ByteBuffer data, int particleCount,
-            Matrix4f modelViewMatrix, Matrix4f projMatrix,
-            float[] cameraRight, float[] cameraUp,
-            float originX, float originY, float originZ,
-            boolean useTexture, float partialTicks,
-            boolean bindFramebuffer) {
+    // Standard Batch Rendering State
+    private static boolean standardBatchActive = false;
+    private static int standardRestoreFboId = -1;
+    private static int[] standardViewport = new int[4];
 
-        if (particleCount <= 0 || data == null || !initialized || !shaderCompiled)
+    /**
+     * 开始标准渲染批量 (Standard/Additive)
+     * <p>
+     * 初始化渲染状态，绑定 Shader 和 VAO，上传通用 Uniform。
+     * 必须在调用 renderStandardBatch 之前调用。
+     * </p>
+     * 
+     * @param restoreFboId 渲染结束后需要恢复的 FBO ID。如果为 -1，则不执行恢复。
+     */
+    public static void beginStandardRendering(Matrix4f modelViewMatrix, Matrix4f projMatrix,
+            float[] cameraRight, float[] cameraUp, int restoreFboId) {
+        if (!initialized || !shaderCompiled)
+            return;
+
+        RenderSystem.assertOnRenderThread();
+
+        if (standardBatchActive) {
+            Nebula.LOGGER.warn("[GpuParticleRenderer] beginStandardRendering called while already active!");
+            return;
+        }
+
+        standardBatchActive = true;
+        standardRestoreFboId = restoreFboId;
+
+        // Backup Viewport
+        GL11.glGetIntegerv(GL11.GL_VIEWPORT, standardViewport);
+
+        // Render State
+        RenderSystem.disableCull();
+        RenderSystem.enableDepthTest();
+        RenderSystem.depthFunc(GL11.GL_LEQUAL);
+
+        // Bind Shader & VAO
+        GL20.glUseProgram(shaderProgram);
+        GL30.glBindVertexArray(vao);
+
+        // Upload Common Uniforms
+        uploadMatrix(uModelViewMat, modelViewMatrix);
+        uploadMatrix(uProjMat, projMatrix);
+
+        if (uCameraRight != -1)
+            GL20.glUniform3f(uCameraRight, cameraRight[0], cameraRight[1], cameraRight[2]);
+        if (uCameraUp != -1)
+            GL20.glUniform3f(uCameraUp, cameraUp[0], cameraUp[1], cameraUp[2]);
+
+        // Emissive Strength
+        float currentEmissive = IrisUtil.isIrisRenderingActive() ? 3.0f : 1.0f;
+        if (uEmissiveStrength != -1)
+            GL20.glUniform1f(uEmissiveStrength, currentEmissive);
+    }
+
+    /**
+     * 结束标准渲染批量
+     * <p>
+     * 恢复渲染状态，解绑资源。
+     * </p>
+     */
+    public static void endStandardRendering() {
+        if (!standardBatchActive)
+            return;
+
+        RenderSystem.assertOnRenderThread();
+
+        // 1. Unbind Resources
+        GL30.glBindVertexArray(0);
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, SSBO_BINDING_INDEX, 0);
+        ParticleTextureManager.unbind();
+
+        RenderSystem.activeTexture(GL13.GL_TEXTURE0);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+
+        // 2. Restore State
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.enableDepthTest();
+        RenderSystem.depthFunc(GL11.GL_LEQUAL);
+        RenderSystem.depthMask(true);
+        RenderSystem.enableCull();
+
+        // 3. Reset Shader
+        GL20.glUseProgram(0);
+        RenderSystem.setShader(() -> null);
+
+        // 4. Restore Viewport
+        GL11.glViewport(standardViewport[0], standardViewport[1], standardViewport[2], standardViewport[3]);
+
+        // 5. Restore Framebuffer
+        if (standardRestoreFboId >= 0) {
+            // 如果是 MC 主 FBO，用封装方法（更新状态）
+            if (standardRestoreFboId == MinecraftClient.getInstance().getFramebuffer().fbo) {
+                MinecraftClient.getInstance().getFramebuffer().beginWrite(false);
+            } else {
+                // 否则直接 GL 绑定 (Iris 的 buffer)
+                GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, standardRestoreFboId);
+            }
+        }
+
+        standardBatchActive = false;
+        standardRestoreFboId = -1;
+    }
+
+    /**
+     * 渲染标准批量中的一个实例
+     * <p>
+     * 必须在 beginStandardRendering 和 endStandardRendering 之间调用。
+     * </p>
+     */
+    public static void renderStandardBatch(ByteBuffer data, int particleCount,
+            float originX, float originY, float originZ,
+            boolean useTexture, float partialTicks) {
+
+        if (!standardBatchActive) {
+            Nebula.LOGGER.warn("[GpuParticleRenderer] renderStandardBatch called without beginStandardRendering!");
+            return;
+        }
+
+        if (particleCount <= 0 || data == null)
             return;
 
         RenderSystem.assertOnRenderThread();
@@ -544,12 +651,11 @@ public class GpuParticleRenderer {
         int dataSize = data.remaining();
         lastFrameUsedBytes = dataSize;
 
-        // 检查是否需要扩容（PMB 模式下需要重新创建缓冲区）
+        // Buffer Management
         if (dataSize > currentBufferSize) {
             expandBuffers(dataSize);
         }
 
-        // 选择当前帧使用的缓冲区，并上传数据
         int ssbo;
         if (useFallback) {
             ssbo = uploadDataFallback(data, dataSize);
@@ -557,61 +663,16 @@ public class GpuParticleRenderer {
             ssbo = uploadDataPMB(data, dataSize);
         }
 
-        // 备份视口
-        int[] viewport = new int[4];
-        GL11.glGetIntegerv(GL11.GL_VIEWPORT, viewport);
-
-        // 【Iris 兼容】只有在非 Iris 模式下，才强制绑定 MC 主 Framebuffer
-        if (bindFramebuffer && !IrisUtil.isIrisRenderingActive()) {
-            MinecraftClient.getInstance().getFramebuffer().beginWrite(false);
-        }
-
-        // 【Iris 兼容】在使用 Iris 时，显式绑定其半透明 Framebuffer
-        // 参考 NeoInstancedRenderManager，通过反射调用 Iris 的 bind() 方法
-        if (IrisUtil.isIrisRenderingActive()) {
-            IrisUtil.bindIrisTranslucentFramebuffer();
-        }
-
-        // 获取当前绑定的 Framebuffer ID (无论是 MC 的还是 Iris 的)
-        // 此时如果是 Iris 模式，targetFboId 应该是 Iris 的 writingToAfterTranslucent FBO
-        int targetFboId = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
-
-        // 渲染状态设置
-        RenderSystem.disableCull();
-        RenderSystem.enableDepthTest();
-        RenderSystem.depthFunc(GL11.GL_LEQUAL);
-
-        BlendMode blendMode = ModConfig.getInstance().getBlendMode();
-
-        // 绑定 SSBO 到 Binding Point 0
+        // Bind SSBO
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, SSBO_BINDING_INDEX, ssbo);
-        GL30.glBindVertexArray(vao); // 绑定粒子 VAO
 
-        // 使用粒子 Shader
-        GL20.glUseProgram(shaderProgram);
-
-        // Upload Common Uniforms
-        uploadMatrix(uModelViewMat, modelViewMatrix);
-        uploadMatrix(uProjMat, projMatrix);
-
-        // uniform 有效性检查
-        if (uCameraRight != -1)
-            GL20.glUniform3f(uCameraRight, cameraRight[0], cameraRight[1], cameraRight[2]);
-        if (uCameraUp != -1)
-            GL20.glUniform3f(uCameraUp, cameraUp[0], cameraUp[1], cameraUp[2]);
+        // Upload Instance-Specific Uniforms
         if (uOrigin != -1)
             GL20.glUniform3f(uOrigin, originX, originY, originZ);
         if (uPartialTicks != -1)
             GL20.glUniform1f(uPartialTicks, partialTicks);
-        if (uPartialTicks != -1)
-            GL20.glUniform1f(uPartialTicks, partialTicks);
 
-        // 动态设置 HDR 强度: Iris 开启时增强亮度(3.0)，关闭时保持原色(1.0)
-        float currentEmissive = IrisUtil.isIrisRenderingActive() ? 3.0f : 1.0f;
-        if (uEmissiveStrength != -1)
-            GL20.glUniform1f(uEmissiveStrength, currentEmissive);
-
-        // 纹理设置
+        // Texture Binding
         if (useTexture && ParticleTextureManager.isInitialized()) {
             ParticleTextureManager.bind(0);
             if (uSampler0 != -1)
@@ -623,120 +684,39 @@ public class GpuParticleRenderer {
                 GL20.glUniform1i(uUseTexture, 0);
         }
 
-        // --- 渲染逻辑分支 ---
+        // Drawing Passes (2-Pass: Opaque + Translucent)
+        BlendMode blendMode = ModConfig.getInstance().getBlendMode();
 
-        if (blendMode == BlendMode.OIT && oitFbo != null && oitProgram > 0) {
-            // ==========================================
-            // Pass 1: 不透明粒子 (Opaque)
-            // 目标: 主 FBO (Iris/MC)
-            // ==========================================
-            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, targetFboId);
-            if (uRenderPass != -1)
-                GL20.glUniform1i(uRenderPass, 0); // Opaque Pass
+        // Pass 1: Opaque
+        if (uRenderPass != -1)
+            GL20.glUniform1i(uRenderPass, 0); // Opaque Pass
 
-            RenderSystem.depthMask(true);
-            RenderSystem.enableBlend();
-            // 【CRITICAL FIX】显式重置，防止 OIT 状态污染
-            GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
-            RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
-            // 绘制实体粒子
-            GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
+        RenderSystem.depthMask(true);
+        RenderSystem.enableBlend();
+        RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
 
-            // ==========================================
-            // Pass 2: 半透明粒子 (Translucent)
-            // 目标: OIT FBO
-            // ==========================================
-            oitFbo.resize(viewport[2], viewport[3]);
-            oitFbo.bindAndShareDepth(targetFboId);
-            oitFbo.clear(); // Clear Accum(0) & Reveal(1)
+        GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
 
-            // 保持使用 粒子 Shader (shaderProgram)
-            if (uRenderPass != -1)
-                GL20.glUniform1i(uRenderPass, 1); // Translucent Pass
+        // Pass 2: Translucent
+        if (uRenderPass != -1)
+            GL20.glUniform1i(uRenderPass, 2); // Translucent Pass (Standard)
 
-            RenderSystem.depthMask(false); // OIT 核心：不写深度
-            RenderSystem.enableBlend();
-            // OIT 专用混合模式 (Requires GL 4.0+)
-            GL40.glBlendFunci(0, GL11.GL_ONE, GL11.GL_ONE); // Accum
-            GL40.glBlendFunci(1, GL11.GL_ZERO, GL11.GL_ONE_MINUS_SRC_COLOR); // Reveal
+        RenderSystem.depthMask(false);
 
-            // 绘制半透明粒子 (Instanced)
-            GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
-
-            // ==========================================
-            // Pass 3: 全屏合成 (Composite)
-            // 目标: 主 FBO (Iris/MC)
-            // ==========================================
-            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, targetFboId);
-
-            // 切换到 合成 Shader
-            GL20.glUseProgram(oitProgram);
-
-            // 恢复状态用于合成
-            RenderSystem.depthMask(false); // 合成时不写深度，只贴颜色
-            RenderSystem.enableBlend();
-            RenderSystem.blendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA); // 标准混合把结果贴上去
-
-            // 绑定纹理
-            GL13.glActiveTexture(GL13.GL_TEXTURE0);
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, oitFbo.getAccumTexture());
-            if (uOitAccum != -1)
-                GL20.glUniform1i(uOitAccum, 0);
-
-            GL13.glActiveTexture(GL13.GL_TEXTURE1);
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, oitFbo.getRevealTexture());
-            if (uOitReveal != -1)
-                GL20.glUniform1i(uOitReveal, 1);
-
-            // 绘制全屏四边形 (使用 Quad VBO)
-            // 注意：这里的 VAO 仍然是粒子的 VAO，但只要它有 Position (0) 属性且 Quad VBO 有数据即可
-            GL31.glDrawArrays(GL11.GL_TRIANGLE_FAN, 0, 4);
-
-        } else {
-            // === 传统渲染路径 (Two-Pass: Opaque + Translucent) ===
-            //
-            // 逻辑：
-            // Pass 1: 不透明粒子 - 开启深度写入，使用 Alpha 混合，uRenderPass = 0
-            // Pass 2: 透明粒子 - 关闭深度写入，使用配置的混合模式，uRenderPass = 1
-
-            // ==========================================
-            // Pass 1: 不透明粒子 (Opaque)
-            // ==========================================
-            if (uRenderPass != -1)
-                GL20.glUniform1i(uRenderPass, 0); // Opaque Pass
-
-            RenderSystem.depthMask(true); // 关键：不透明粒子必须写深度！
-            RenderSystem.enableBlend();
-            RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
-
-            GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
-
-            // ==========================================
-            // Pass 2: 透明粒子 (Translucent)
-            // ==========================================
-            if (uRenderPass != -1)
-                GL20.glUniform1i(uRenderPass, 2); // Translucent Pass (Mode 2 = Standard HDR/LDR output)
-
-            RenderSystem.depthMask(false); // 透明粒子不写深度
-
-            // 根据配置应用混合模式 (只用于透明粒子)
-            switch (blendMode) {
-                case ADDITIVE:
-                    // 加法混合：发光粒子效果
-                    RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE);
-                    break;
-                case ALPHA:
-                default:
-                    // 标准 Alpha 混合
-                    RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA,
-                            GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
-                    break;
-            }
-
-            GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
+        switch (blendMode) {
+            case ADDITIVE:
+                RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE);
+                break;
+            case ALPHA:
+            default:
+                RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA,
+                        GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
+                break;
         }
 
-        // 收集性能数据到 PerformanceStats
+        GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
+
+        // Stats
         PerformanceStats stats = PerformanceStats.getInstance();
         stats.setShaderProgram(shaderProgram);
         stats.setVao(vao);
@@ -745,12 +725,13 @@ public class GpuParticleRenderer {
         stats.setUsedBufferBytes(lastFrameUsedBytes);
         stats.setPmbSupported(pmbSupported);
         stats.setUsingFallback(useFallback);
-        stats.setIrisMode(!bindFramebuffer);
+        stats.setIrisMode(IrisUtil.isIrisRenderingActive());
+        stats.setTargetFboId(standardRestoreFboId);
         stats.setOrigin(originX, originY, originZ);
-        stats.setShouldBindFramebuffer(bindFramebuffer);
-        stats.setLastGlError(GL11.glGetError(), "Post-render"); // 简单检查错误
+        stats.setLastGlError(GL11.glGetError(), "Post-Standard-Batch-Instance");
+        // Other stats are set per frame in Manager
 
-        // PMB Fence Logic
+        // Fence Logic
         if (!useFallback) {
             if (fences[currentBufferIndex] != 0) {
                 GL32.glDeleteSync(fences[currentBufferIndex]);
@@ -758,40 +739,6 @@ public class GpuParticleRenderer {
             fences[currentBufferIndex] = GL32.glFenceSync(GL32.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
             currentBufferIndex = (currentBufferIndex + 1) % BUFFER_COUNT;
         }
-
-        // === 状态恢复===
-
-        // 1. 解绑我们使用的资源
-        GL30.glBindVertexArray(0);
-        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, SSBO_BINDING_INDEX, 0); // 关键：解绑 SSBO
-        ParticleTextureManager.unbind();
-
-        RenderSystem.activeTexture(GL13.GL_TEXTURE0);
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
-
-        // 2. 恢复 OpenGL 状态
-        RenderSystem.defaultBlendFunc();
-        RenderSystem.enableDepthTest();
-        RenderSystem.depthFunc(GL11.GL_LEQUAL);
-        RenderSystem.depthMask(true);
-        RenderSystem.enableCull();
-
-        // 3. 正确重置 Shader
-        // 不要只调用 glUseProgram(0)，必须通知 RenderSystem 我们清理了 Shader
-        // 否则 MC 以为 Shader 还是它的，直接 setUniform 就会报错崩溃
-        GL20.glUseProgram(0);
-        RenderSystem.setShader(() -> null);
-
-        // 4. 恢复视口
-        GL11.glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-
-        // 5. 恢复 Framebuffer 状态
-        if (bindFramebuffer) {
-            // 确保切回 MC 的写状态
-            MinecraftClient.getInstance().getFramebuffer().beginWrite(false);
-        }
-
-        GL11.glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
     }
 
     /**
@@ -890,45 +837,6 @@ public class GpuParticleRenderer {
             matrix.get(matrixBuffer);
             matrixBuffer.rewind();
             GL20.glUniformMatrix4fv(location, false, matrixBuffer);
-        }
-    }
-
-    /**
-     * 渲染粒子（默认绑定 MC 主 Framebuffer，用于原版渲染路径）
-     */
-    public static void render(ByteBuffer data, int particleCount,
-            Matrix4f modelViewMatrix, Matrix4f projMatrix,
-            float[] cameraRight, float[] cameraUp,
-            float originX, float originY, float originZ,
-            float partialTicks) {
-        render(data, particleCount, modelViewMatrix, projMatrix,
-                cameraRight, cameraUp, originX, originY, originZ, partialTicks, true);
-    }
-
-    /**
-     * 渲染粒子
-     * 
-     * @param data            粒子数据缓冲区
-     * @param particleCount   粒子数量
-     * @param modelViewMatrix 模型视图矩阵
-     * @param projMatrix      投影矩阵
-     * @param cameraRight     相机右向量
-     * @param cameraUp        相机上向量
-     * @param originX         原点 X
-     * @param originY         原点 Y
-     * @param originZ         原点 Z
-     * @param partialTicks    部分 ticks
-     * @param bindFramebuffer 是否绑定 MC 主 Framebuffer。
-     *                        Iris 环境下应传入 false，原版环境下应传入 true。
-     */
-    public static void render(ByteBuffer data, int particleCount,
-            Matrix4f modelViewMatrix, Matrix4f projMatrix,
-            float[] cameraRight, float[] cameraUp,
-            float originX, float originY, float originZ,
-            float partialTicks, boolean bindFramebuffer) {
-        if (shaderCompiled) {
-            renderInstanced(data, particleCount, modelViewMatrix, projMatrix,
-                    cameraRight, cameraUp, originX, originY, originZ, true, partialTicks, bindFramebuffer);
         }
     }
 

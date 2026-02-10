@@ -144,7 +144,14 @@ public class ClientAnimationManager {
         float[] cameraUp = new float[3];
         calculateCameraVectors(camera, cameraRight, cameraUp);
 
+        // 性能统计
+        boolean shouldCollectStats = ModConfig.getInstance().getShowDebugHud();
+        if (shouldCollectStats) {
+            PerformanceStats.getInstance().beginFrame();
+        }
+
         int totalParticles = 0;
+        int renderedInstancesCount = 0;
 
         // 创建渲染列表副本，避免长时间持有锁阻塞主线程
         List<AnimationInstance> renderList;
@@ -166,13 +173,31 @@ public class ClientAnimationManager {
         double maxRenderDistance = client.options.getClampedViewDistance() * 16.0 * 2.0; // 扩大 2 倍以确保边缘不被剔除
 
         for (AnimationInstance instance : renderList) {
-            // 【简化剔除】检查动画原点与相机的距离
-            Vec3d origin = instance.getOrigin();
-            double distSq = origin.squaredDistanceTo(cameraPos);
-            if (distSq > maxRenderDistance * maxRenderDistance) {
-                // 距离太远，跳过渲染
-                continue;
+            // 【改进剔除】检查动画包围盒与相机的距离
+            // 使用 BBox 最近点距离检查，防止大体积粒子特效被错误剔除
+            Box bbox = instance.getWorldBoundingBox();
+            if (bbox != null) {
+                // 计算相机点到 AABB 的最近距离平方
+                // 手动计算 point-to-AABB squared distance
+                double dx = Math.max(bbox.minX - cameraPos.x, Math.max(0, cameraPos.x - bbox.maxX));
+                double dy = Math.max(bbox.minY - cameraPos.y, Math.max(0, cameraPos.y - bbox.maxY));
+                double dz = Math.max(bbox.minZ - cameraPos.z, Math.max(0, cameraPos.z - bbox.maxZ));
+                double distSq = dx * dx + dy * dy + dz * dz;
+
+                if (distSq > maxRenderDistance * maxRenderDistance) {
+                    continue; // 确实远，剔除
+                }
+            } else {
+                // 回退逻辑：如果还没有 BBox（第一帧加载中），使用原点检查
+                Vec3d origin = instance.getOrigin();
+                double distSq = origin.squaredDistanceTo(cameraPos);
+                if (distSq > maxRenderDistance * maxRenderDistance) {
+                    continue;
+                }
             }
+
+            // 需要在此处获取 origin，供后续 offset 计算使用
+            Vec3d origin = instance.getOrigin();
 
             // 确保纹理已加载（第一次渲染时）
             instance.ensureTexturesLoaded();
@@ -180,6 +205,7 @@ public class ClientAnimationManager {
             ByteBuffer frameData = instance.getNextFrame();
 
             if (frameData != null && frameData.remaining() > 0) {
+                renderedInstancesCount++;
                 ByteBuffer readBuffer = frameData.slice();
 
                 int particleCount = readBuffer.remaining() / AnimationFrame.BYTES_PER_PARTICLE;
@@ -239,6 +265,16 @@ public class ClientAnimationManager {
         }
 
         currentParticleCount = totalParticles;
+
+        if (shouldCollectStats) {
+            // 更新性能统计
+            PerformanceStats stats = PerformanceStats.getInstance();
+            stats.setParticleCount(totalParticles);
+            stats.setInstanceCount(renderedInstancesCount);
+            stats.setEmissiveStrength(ModConfig.getInstance().getEmissiveStrength());
+            stats.setRenderInGame(ModConfig.getInstance().shouldRenderInGame());
+            stats.endFrame();
+        }
     }
 
     /**
@@ -259,7 +295,10 @@ public class ClientAnimationManager {
             return;
 
         // 开始帧计时
-        PerformanceStats.getInstance().beginFrame();
+        boolean shouldCollectStats = ModConfig.getInstance().getShowDebugHud();
+        if (shouldCollectStats) {
+            PerformanceStats.getInstance().beginFrame();
+        }
 
         // [Config Control] 如果不在 Replay 渲染模式且配置关闭了游戏内渲染，则跳过
         if (!ReplayModUtil.isRendering() && !ModConfig.getInstance().shouldRenderInGame()) {
@@ -277,6 +316,9 @@ public class ClientAnimationManager {
 
         Vec3d cameraPos = camera.getPos();
 
+        int totalParticles = 0;
+        int renderedInstancesCount = 0;
+
         // 使用传入的 ModelView 矩阵，移除平移分量
         Matrix4f mvMatrix = new Matrix4f(modelViewMatrix);
         mvMatrix.m30(0.0f);
@@ -287,8 +329,6 @@ public class ClientAnimationManager {
         float[] cameraRight = new float[3];
         float[] cameraUp = new float[3];
         calculateCameraVectors(camera, cameraRight, cameraUp);
-
-        int totalParticles = 0;
 
         // 创建渲染列表副本，避免长时间持有锁阻塞主线程
         List<AnimationInstance> renderList;
@@ -386,13 +426,15 @@ public class ClientAnimationManager {
 
             currentParticleCount = totalParticles;
 
-            // TODO: DrawTick 未正确更新
-            // 更新性能统计
-            PerformanceStats stats = PerformanceStats.getInstance();
-            stats.setParticleCount(totalParticles);
-            stats.setInstanceCount(renderList.size());
-            // TODO: Instance 统计不准确，应该设置Instance计数器，创建 +1 ，销毁 -1， clear 归 0
-            stats.endFrame();
+            if (shouldCollectStats) {
+                // 更新性能统计
+                PerformanceStats stats = PerformanceStats.getInstance();
+                stats.setParticleCount(totalParticles);
+                stats.setInstanceCount(renderedInstancesCount);
+                stats.setEmissiveStrength(ModConfig.getInstance().getEmissiveStrength());
+                stats.setRenderInGame(ModConfig.getInstance().shouldRenderInGame());
+                stats.endFrame();
+            }
         }
 
         if (isOIT && !renderList.isEmpty())
@@ -416,7 +458,10 @@ public class ClientAnimationManager {
             return;
 
         // 开始帧计时
-        PerformanceStats.getInstance().beginFrame();
+        boolean shouldCollectStats = ModConfig.getInstance().getShowDebugHud();
+        if (shouldCollectStats) {
+            PerformanceStats.getInstance().beginFrame();
+        }
 
         // [Config Control] 如果不在 Replay 渲染模式且配置关闭了游戏内渲染，则跳过
         if (!ReplayModUtil.isRendering() && !ModConfig.getInstance().shouldRenderInGame()) {
@@ -462,6 +507,7 @@ public class ClientAnimationManager {
         calculateCameraVectors(camera, cameraRight, cameraUp);
 
         int totalParticles = 0;
+        int renderedInstancesCount = 0;
 
         // 创建渲染列表副本，避免长时间持有锁阻塞主线程
         List<AnimationInstance> renderList;
@@ -489,6 +535,24 @@ public class ClientAnimationManager {
                     // AABB 不在视锥内，跳过渲染
                     continue;
                 }
+            } else {
+                // 【备用剔除】距离剔除
+                double maxRenderDistance = client.options.getClampedViewDistance() * 16.0 * 2.0;
+                if (worldBbox != null) {
+                    double dx = Math.max(worldBbox.minX - cameraPos.x, Math.max(0, cameraPos.x - worldBbox.maxX));
+                    double dy = Math.max(worldBbox.minY - cameraPos.y, Math.max(0, cameraPos.y - worldBbox.maxY));
+                    double dz = Math.max(worldBbox.minZ - cameraPos.z, Math.max(0, cameraPos.z - worldBbox.maxZ));
+                    double distSq = dx * dx + dy * dy + dz * dz;
+                    if (distSq > maxRenderDistance * maxRenderDistance) {
+                        continue;
+                    }
+                } else {
+                    Vec3d origin = instance.getOrigin();
+                    double distSq = origin.squaredDistanceTo(cameraPos);
+                    if (distSq > maxRenderDistance * maxRenderDistance) {
+                        continue;
+                    }
+                }
             }
 
             // 确保纹理已加载（第一次渲染时）
@@ -498,6 +562,7 @@ public class ClientAnimationManager {
 
             // 使用 slice() 创建缓冲区视图
             if (frameData != null && frameData.remaining() > 0) {
+                renderedInstancesCount++;
                 ByteBuffer readBuffer = frameData.slice();
 
                 int particleCount = readBuffer.remaining() / AnimationFrame.BYTES_PER_PARTICLE;
@@ -560,11 +625,15 @@ public class ClientAnimationManager {
             GpuParticleRenderer.endOITAndComposite(targetFboId);
         }
 
-        // 更新性能统计
-        PerformanceStats stats = PerformanceStats.getInstance();
-        stats.setParticleCount(totalParticles);
-        stats.setInstanceCount(renderList.size());
-        stats.endFrame();
+        if (shouldCollectStats) {
+            // 更新性能统计
+            PerformanceStats stats = PerformanceStats.getInstance();
+            stats.setParticleCount(totalParticles);
+            stats.setInstanceCount(renderedInstancesCount);
+            stats.setEmissiveStrength(ModConfig.getInstance().getEmissiveStrength());
+            stats.setRenderInGame(ModConfig.getInstance().shouldRenderInGame());
+            stats.endFrame();
+        }
     }
 
     /**

@@ -246,6 +246,26 @@ public class PerformanceStats {
         return shouldBindFramebuffer;
     }
 
+    // ========== New Stats ==========
+    private float emissiveStrength = 1.0f;
+    private boolean renderInGame = true;
+
+    public void setEmissiveStrength(float strength) {
+        this.emissiveStrength = strength;
+    }
+
+    public float getEmissiveStrength() {
+        return emissiveStrength;
+    }
+
+    public void setRenderInGame(boolean render) {
+        this.renderInGame = render;
+    }
+
+    public boolean isRenderInGame() {
+        return renderInGame;
+    }
+
     // ========== Getters ==========
 
     public int getParticleCount() {

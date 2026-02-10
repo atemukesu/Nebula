@@ -21,7 +21,6 @@ public class ParticleState {
     public int id; // Needed for stateMap iteration in processIFrame
 
     public ParticleState() {
-        // NBL 文档 "Zero Basis Principle": 新粒子的所有属性默认为 0
         this.x = 0;
         this.y = 0;
         this.z = 0;
@@ -39,18 +38,15 @@ public class ParticleState {
         this.seqID = 0;
     }
 
+    @Deprecated
     public void read(java.nio.ByteBuffer data) {
-        // Not used by NblStreamer anymore as it does manual reads?
-        // Wait, NblStreamer rewrite used manual reads, but maybe we should keep helper
-        // methods if needed.
-        // But NblStreamer uses SoA layout now, so it reads fields manually.
-        // Actually, let's keep it simple. NblStreamer modifies fields directly.
     }
 
+    @Deprecated
     public void readPFrame(java.nio.ByteBuffer data) {
-        // Not used.
     }
 
+    @Deprecated
     public ParticleState copy() {
         ParticleState copy = new ParticleState();
         copy.x = this.x;

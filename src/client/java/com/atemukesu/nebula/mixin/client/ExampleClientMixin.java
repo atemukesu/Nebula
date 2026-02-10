@@ -24,8 +24,6 @@ public class ExampleClientMixin {
 		if (screen instanceof TitleScreen && !hasTriggeredInitialLoad) {
 			hasTriggeredInitialLoad = true;
 			Nebula.LOGGER.info("Triggering initial background animation load.");
-
-			// 调用简化的加载器
 			ClientAnimationLoader.loadAnimationsAsync(
 					() -> { // 加载成功的回调
 						Nebula.LOGGER.info("Initial background animation load completed.");

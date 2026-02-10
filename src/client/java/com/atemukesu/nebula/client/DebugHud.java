@@ -136,7 +136,6 @@ public class DebugHud {
                     stats.getOriginY(), stats.getOriginZ()), 0xCCCCCC));
             cachedLines.add(new CachedLine(String.format("bindFramebuffer: %b", stats.shouldBindFramebuffer()),
                     stats.shouldBindFramebuffer() ? 0xAAFFAA : 0xFFAAAA));
-            // New items requested by user
             cachedLines.add(new CachedLine(
                     String.format("Emissive: %.1f | Game Render: %b", stats.getEmissiveStrength(),
                             stats.isRenderInGame()),

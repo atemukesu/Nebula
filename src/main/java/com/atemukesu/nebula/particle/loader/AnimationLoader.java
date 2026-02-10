@@ -1,6 +1,7 @@
 package com.atemukesu.nebula.particle.loader;
 
 import com.atemukesu.nebula.Nebula;
+import net.fabricmc.loader.api.FabricLoader;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -18,7 +19,7 @@ import java.util.stream.Stream;
 public class AnimationLoader {
 
     private static final Map<String, Path> animations = new ConcurrentHashMap<>();
-    private static Path animationsDir;
+    private static Path animationsDir = FabricLoader.getInstance().getGameDir().resolve("nebula").resolve("animations");
 
     /**
      * 发现并索引所有动画文件

@@ -377,7 +377,7 @@ public class NblStreamer implements Runnable {
             p.g = data.get(gOff + i) & 0xFF;
             p.b = data.get(bOff + i) & 0xFF;
             p.a = data.get(aOff + i) & 0xFF;
-            p.size = (data.getShort(sizeOff + i * 2) & 0xFFFF) / 100.0f;
+            p.size = Math.max(0.01f, (data.getShort(sizeOff + i * 2) & 0xFFFF) / 100.0f);
             p.texID = data.get(texOff + i) & 0xFF;
             p.seqID = data.get(seqOff + i) & 0xFF;
 
@@ -438,8 +438,11 @@ public class NblStreamer implements Runnable {
             p.r = (p.r + data.get(drOff + i)) & 0xFF;
             p.g = (p.g + data.get(dgOff + i)) & 0xFF;
             p.b = (p.b + data.get(dbOff + i)) & 0xFF;
-            p.a = (p.a + data.get(daOff + i)) & 0xFF;
-            p.size += data.getShort(sizeOff + i * 2) / 100.0f;
+            // set min/max for alpha to prevent wrap-around
+            int newAlpha = p.a + data.get(daOff + i);
+            p.a = Math.max(0, Math.min(255, newAlpha));
+            // set min for size
+            p.size = Math.max(0.01f, p.size + data.getShort(sizeOff + i * 2) / 100.0f);
             p.texID = (p.texID + data.get(texOff + i)) & 0xFF;
             p.seqID = (p.seqID + data.get(seqOff + i)) & 0xFF;
 
@@ -583,8 +586,6 @@ public class NblStreamer implements Runnable {
         MemoryUtil.memPutFloat(addr + 40, 0f); // Padding
         MemoryUtil.memPutFloat(addr + 44, 0f); // Padding
     }
-
-    // ... (acquireBuffer, releaseBuffer, 辅助方法等保持原样) ...
 
     // 内存管理辅助函数
     private void ensureCompressedBuffer(int size) {

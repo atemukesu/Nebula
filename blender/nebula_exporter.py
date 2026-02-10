@@ -1,6 +1,6 @@
 bl_info = {
-    "name": "NebulaFX NBL Exporter (Fixed)",
-    "author": "AI & Atemukesu",
+    "name": "NebulaFX NBL Exporter",
+    "author": "Atemukesu",
     "version": (1, 0, 1),
     "blender": (3, 0, 0),
     "location": "3D视图 > 侧边栏 > NebulaFX",

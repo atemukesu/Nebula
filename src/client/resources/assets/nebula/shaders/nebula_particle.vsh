@@ -62,9 +62,4 @@ void main() {
     
     // 计算最终位置
     gl_Position = ProjMat * viewPos;
-
-    // 3. 移除激进的剔除逻辑
-    // 顶点着色器无法知道纹理的 Alpha 值，因此不能在这里剔除。
-    // 否则会导致“顶点不透明但纹理半透明”的粒子在 Translucent Pass 中被错误剔除。
-    // 将剔除工作完全交给 Fragment Shader 处理。
 }

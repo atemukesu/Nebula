@@ -76,9 +76,6 @@ public class GpuParticleRenderer {
     private static int uOitAccum = -1;
     private static int uOitReveal = -1;
 
-    // 发光强度
-    private static float emissiveStrength = 1.0f;
-
     private static final int SSBO_BINDING_INDEX = 0;
 
     // 临时矩阵缓冲
@@ -1068,24 +1065,5 @@ public class GpuParticleRenderer {
      */
     public static boolean isPMBSupported() {
         return pmbSupported && !useFallback;
-    }
-
-    /**
-     * 获取当前发光强度
-     * 
-     * @return 发光强度值 (默认 1.5)
-     */
-    public static float getEmissiveStrength() {
-        return emissiveStrength;
-    }
-
-    /**
-     * 设置发光强度
-     * 
-     * @param strength 发光强度值 (建议范围 0.5 - 3.0)
-     */
-    public static void setEmissiveStrength(float strength) {
-        emissiveStrength = Math.max(0.1f, Math.min(5.0f, strength));
-        Nebula.LOGGER.info("[GpuParticleRenderer] Emissive strength set to: {}", emissiveStrength);
     }
 }

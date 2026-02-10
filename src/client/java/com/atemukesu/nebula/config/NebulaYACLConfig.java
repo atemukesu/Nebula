@@ -3,6 +3,7 @@ package com.atemukesu.nebula.config;
 import dev.isxander.yacl3.api.*;
 import dev.isxander.yacl3.api.controller.BooleanControllerBuilder;
 import dev.isxander.yacl3.api.controller.EnumControllerBuilder;
+import dev.isxander.yacl3.api.controller.FloatSliderControllerBuilder;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.text.Text;
 
@@ -80,9 +81,10 @@ public class NebulaYACLConfig {
                                                                                 2.0f,
                                                                                 config::getEmissiveStrength,
                                                                                 config::setEmissiveStrength)
-                                                                .controller(opt -> FloatControllerBuilder.create(opt)
-                                                                                .minValue(0.0f)
-                                                                                .maxValue(10.0f))
+                                                                .controller(opt -> FloatSliderControllerBuilder
+                                                                                .create(opt)
+                                                                                .min(0.0f)
+                                                                                .max(10.0f))
                                                                 .build())
                                                 .build())
 

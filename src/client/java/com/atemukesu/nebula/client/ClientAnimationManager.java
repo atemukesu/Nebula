@@ -386,10 +386,12 @@ public class ClientAnimationManager {
 
             currentParticleCount = totalParticles;
 
+            // TODO: DrawTick 未正确更新
             // 更新性能统计
             PerformanceStats stats = PerformanceStats.getInstance();
             stats.setParticleCount(totalParticles);
             stats.setInstanceCount(renderList.size());
+            // TODO: Instance 统计不准确，应该设置Instance计数器，创建 +1 ，销毁 -1， clear 归 0
             stats.endFrame();
         }
 

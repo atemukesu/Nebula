@@ -9,15 +9,13 @@ flat in float vBloomFactor;   // 接收顶点传入的亮度 (逐粒子 Bloom �
 uniform sampler2DArray Sampler0;
 uniform int UseTexture;
 uniform float EmissiveStrength; // 发光强度 (0.0 - 2.0+)
-uniform int IrisMRT;
 uniform int uRenderPass; // 0=Opaque, 1=Translucent, 2=All
 
 // === 输出 ===
 // 在 Iris 光影模式下使用 MRT 输出到多个缓冲区
 // 在原版模式下只使用 fragColor
 layout(location = 0) out vec4 fragColor;      // 主颜色输出 (OIT: Accum)
-layout(location = 1) out vec4 fragData1;      // 光照/法线数据 (OIT: Reveal)
-layout(location = 2) out vec4 fragData2;      // 高光/发光数据 (仅 Iris)
+layout(location = 1) out vec4 fragData1;      // OIT: Reveal (仅在 uRenderPass==1 时使用)
 
 void main() {
     vec4 texColor;
@@ -81,20 +79,14 @@ void main() {
         // 使用原始颜色进行积累，不使用 hdrColor
         fragColor = vec4(baseColor.rgb * alpha * weight, alpha * weight);
         
-        // Revealage (Location 1)
+        // Revealage (Location 1) - 注意：这里是 OIT FBO 的 Location 1，不是主 FBO 的 fragData1
         // 输出 alpha，混合模式 (ZERO, ONE_MINUS_SRC_COLOR) 会产生 product(1-alpha)
         fragData1 = vec4(alpha);
         
-        // fragData2 unused in OIT pass
     } else {
         // === 标准输出 (Opaque / Normal) ===
+        // 直接输出 HDR 颜色，不再写入 MRT
+        // 这会让粒子表现为“全亮” (Unlit)，并且依靠颜色值 > 1.0 触发光影的 Bloom
         fragColor = vec4(hdrColor, baseColor.a);
-        
-        // === Iris MRT 兼容 (保留 Nebula 的优势) ===
-        if (IrisMRT == 1) {
-            fragData1 = vec4(1.0, 1.0, 0.0, 1.0);
-            // 让 fragData2 的发光强度也受 vBloomFactor 影响
-            fragData2 = vec4(0.0, 0.0, min(1.0, EmissiveStrength * vBloomFactor * 0.5), 1.0);
-        }
     }
 }

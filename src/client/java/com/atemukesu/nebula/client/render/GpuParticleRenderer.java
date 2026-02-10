@@ -69,7 +69,7 @@ public class GpuParticleRenderer {
     private static int uUseTexture = -1;
     private static int uPartialTicks = -1;
     private static int uEmissiveStrength = -1;
-    private static int uIrisMRT = -1;
+
     private static int uRenderPass = -1;
 
     // OIT Composite Uniforms
@@ -239,7 +239,7 @@ public class GpuParticleRenderer {
         uUseTexture = GL20.glGetUniformLocation(shaderProgram, "UseTexture");
         uPartialTicks = GL20.glGetUniformLocation(shaderProgram, "PartialTicks");
         uEmissiveStrength = GL20.glGetUniformLocation(shaderProgram, "EmissiveStrength");
-        uIrisMRT = GL20.glGetUniformLocation(shaderProgram, "IrisMRT");
+
         uRenderPass = GL20.glGetUniformLocation(shaderProgram, "uRenderPass");
 
         // 调试日志 - 帮助排查 uniform 问题
@@ -248,7 +248,7 @@ public class GpuParticleRenderer {
         Nebula.LOGGER.info("  CameraRight={}, CameraUp={}, Origin={}", uCameraRight, uCameraUp, uOrigin);
         Nebula.LOGGER.info("  Sampler0={}, UseTexture={}", uSampler0, uUseTexture);
         Nebula.LOGGER.info("  PartialTicks={}, EmissiveStrength={}", uPartialTicks, uEmissiveStrength);
-        Nebula.LOGGER.info("  IrisMRT={}, RenderPass={}", uIrisMRT, uRenderPass);
+        Nebula.LOGGER.info("  RenderPass={}", uRenderPass);
     }
 
     // Global OIT (Order Independent Transparency) Support
@@ -579,8 +579,6 @@ public class GpuParticleRenderer {
             GL20.glUniform1f(uPartialTicks, partialTicks);
         if (uEmissiveStrength != -1)
             GL20.glUniform1f(uEmissiveStrength, emissiveStrength);
-        if (uIrisMRT != -1)
-            GL20.glUniform1i(uIrisMRT, bindFramebuffer ? 0 : 1);
 
         // 纹理设置
         if (useTexture && ParticleTextureManager.isInitialized()) {

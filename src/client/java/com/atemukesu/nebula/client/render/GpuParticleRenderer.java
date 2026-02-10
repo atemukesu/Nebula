@@ -25,7 +25,7 @@ import java.util.stream.Collectors;
 import com.atemukesu.nebula.client.util.IrisUtil;
 
 /**
- * GPU 粒子渲染器 (Persistent Mapped Buffer 高性能版)
+ * GPU 粒子渲染器 (PMB)
  * <p>
  * 使用 OpenGL 4.4+ Persistent Mapped Buffer 技术：
  * - 持久映射缓冲区，整个程序生命周期内保持映射状态

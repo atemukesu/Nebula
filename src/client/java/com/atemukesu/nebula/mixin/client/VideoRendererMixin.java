@@ -1,6 +1,6 @@
 package com.atemukesu.nebula.mixin.client;
 
-import com.atemukesu.nebula.client.util.ReplayModUtil;
+import com.atemukesu.nebula.client.util.CurrentTimeUtil;
 import com.replaymod.render.RenderSettings;
 import com.replaymod.replay.ReplayHandler;
 import com.replaymod.replaystudio.pathing.path.Timeline;
@@ -32,7 +32,7 @@ public abstract class VideoRendererMixin {
         // 直接从构造函数参数中获取FPS
         int fps = settings.getFramesPerSecond();
         // 通知我们的工具类：渲染已开始，并传递准确的FPS
-        ReplayModUtil.onRenderStart(fps);
+        CurrentTimeUtil.onRenderStart(fps);
     }
 
     /**
@@ -43,6 +43,6 @@ public abstract class VideoRendererMixin {
     @Inject(method = "finish", at = @At("RETURN"))
     private void onRenderEnd(CallbackInfo ci) {
         // 通知我们的工具类：渲染已结束
-        ReplayModUtil.onRenderEnd();
+        CurrentTimeUtil.onRenderEnd();
     }
 }

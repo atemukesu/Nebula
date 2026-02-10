@@ -1,6 +1,7 @@
 package com.atemukesu.nebula.config;
 
 import com.atemukesu.nebula.client.enums.BlendMode;
+import com.atemukesu.nebula.client.enums.CullingBehavior;
 
 import dev.isxander.yacl3.api.*;
 import dev.isxander.yacl3.api.controller.BooleanControllerBuilder;
@@ -71,6 +72,20 @@ public class NebulaYACLConfig {
                                                                                 config::setBlendMode)
                                                                 .controller(opt -> EnumControllerBuilder.create(opt)
                                                                                 .enumClass(BlendMode.class)
+                                                                                .formatValue(mode -> Text.translatable(
+                                                                                                mode.getTranslationKey())))
+                                                                .build())
+                                                .option(Option.<CullingBehavior>createBuilder()
+                                                                .name(Text.translatable(
+                                                                                "gui.nebula.config.culling_behavior"))
+                                                                .description(OptionDescription.of(Text.translatable(
+                                                                                "gui.nebula.config.culling_behavior.desc")))
+                                                                .binding(
+                                                                                CullingBehavior.SIMULATE_ONLY,
+                                                                                config::getCullingBehavior,
+                                                                                config::setCullingBehavior)
+                                                                .controller(opt -> EnumControllerBuilder.create(opt)
+                                                                                .enumClass(CullingBehavior.class)
                                                                                 .formatValue(mode -> Text.translatable(
                                                                                                 mode.getTranslationKey())))
                                                                 .build())

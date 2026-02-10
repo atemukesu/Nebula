@@ -122,8 +122,9 @@ public class DebugHud {
 
             // 显示当前混合模式
             String blendModeStr = config.getBlendMode().name();
+            String cullingBehaviorStr = config.getCullingBehavior().name();
             cachedLines.add(new CachedLine(
-                    String.format("Blend: %s", blendModeStr),
+                    String.format("Blend: %s | Culling: %s", blendModeStr, cullingBehaviorStr),
                     0xFFAA55));
 
             cachedLines.add(new CachedLine(

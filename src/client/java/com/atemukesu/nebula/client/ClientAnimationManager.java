@@ -1,13 +1,14 @@
 package com.atemukesu.nebula.client;
 
 import com.atemukesu.nebula.client.enums.BlendMode;
+import com.atemukesu.nebula.client.enums.CullingBehavior;
 import com.atemukesu.nebula.client.gui.tools.PerformanceStats;
 import com.atemukesu.nebula.Nebula;
 import com.atemukesu.nebula.client.loader.NblStreamer;
 import com.atemukesu.nebula.client.render.AnimationFrame;
 import com.atemukesu.nebula.client.render.GpuParticleRenderer;
 import com.atemukesu.nebula.client.util.IrisUtil;
-import com.atemukesu.nebula.client.util.ReplayModUtil;
+import com.atemukesu.nebula.client.util.CurrentTimeUtil;
 import com.atemukesu.nebula.config.ModConfig;
 import com.atemukesu.nebula.particle.loader.AnimationLoader;
 import net.minecraft.client.MinecraftClient;
@@ -72,7 +73,7 @@ public class ClientAnimationManager {
         // IsReplayModRendering True -> 强制渲染
         // IsReplayModRendering False, GameRendering True -> 渲染
         // IsReplayModRendering False, GameRendering False -> 不渲染且不加载
-        if (!ReplayModUtil.isRendering() && !ModConfig.getInstance().shouldRenderInGame()) {
+        if (!CurrentTimeUtil.isRendering() && !ModConfig.getInstance().shouldRenderInGame()) {
             // Discard: 不读取文件，不创建实例
             return;
         }
@@ -124,7 +125,7 @@ public class ClientAnimationManager {
             return;
 
         // [Config Control] 如果不在 Replay 渲染模式且配置关闭了游戏内渲染，则跳过
-        if (!ReplayModUtil.isRendering() && !ModConfig.getInstance().shouldRenderInGame()) {
+        if (!CurrentTimeUtil.isRendering() && !ModConfig.getInstance().shouldRenderInGame()) {
             return;
         }
 
@@ -212,16 +213,15 @@ public class ClientAnimationManager {
 
             // [核心] 智能休眠控制
             if (!isVisible) {
-                // 不可见时：完全不调用 getNextFrame()，让 IO 线程因队列满而休眠
-                // 天啊，这会带来性能问题和严重的可感的等待闪烁
-                // 干脆交给用户吧
-                // TODO: 用户可以设置是否休眠，作为一个配置项
-                continue;
+                // Determine behavior based on config
+                if (ModConfig.getInstance().getCullingBehavior() == CullingBehavior.PAUSE_AND_HIDE) {
+                    continue;
+                }
             }
 
             // [核心] 唤醒与同步
             // 当再次可见时，检查是否需要 Seek
-            double now = ReplayModUtil.getCurrentAnimationTime();
+            double now = CurrentTimeUtil.getCurrentAnimationTime();
             double elapsed = now - instance.startSeconds;
             int expectedFrame = (int) (elapsed * instance.targetFps);
 
@@ -329,7 +329,7 @@ public class ClientAnimationManager {
         }
 
         // [Config Control] 如果不在 Replay 渲染模式且配置关闭了游戏内渲染，则跳过
-        if (!ReplayModUtil.isRendering() && !ModConfig.getInstance().shouldRenderInGame()) {
+        if (!CurrentTimeUtil.isRendering() && !ModConfig.getInstance().shouldRenderInGame()) {
             return;
         }
 
@@ -405,13 +405,15 @@ public class ClientAnimationManager {
 
             // [核心] 智能休眠控制
             if (!isVisible) {
-                // 不可见时：完全不调用 getNextFrame()，让 IO 线程因队列满而休眠
-                continue;
+                // Determine behavior based on config
+                if (ModConfig.getInstance().getCullingBehavior() == CullingBehavior.PAUSE_AND_HIDE) {
+                    continue;
+                }
             }
 
             // [核心] 唤醒与同步
             // 当再次可见时，检查是否需要 Seek
-            double now = ReplayModUtil.getCurrentAnimationTime();
+            double now = CurrentTimeUtil.getCurrentAnimationTime();
             double elapsed = now - instance.startSeconds;
             int expectedFrame = (int) (elapsed * instance.targetFps);
 
@@ -518,7 +520,7 @@ public class ClientAnimationManager {
         }
 
         // [Config Control] 如果不在 Replay 渲染模式且配置关闭了游戏内渲染，则跳过
-        if (!ReplayModUtil.isRendering() && !ModConfig.getInstance().shouldRenderInGame()) {
+        if (!CurrentTimeUtil.isRendering() && !ModConfig.getInstance().shouldRenderInGame()) {
             return;
         }
 
@@ -622,13 +624,15 @@ public class ClientAnimationManager {
 
             // [核心] 智能休眠控制
             if (!isVisible) {
-                // 不可见时：完全不调用 getNextFrame()，让 IO 线程因队列满而休眠
-                continue;
+                // Determine behavior based on config
+                if (ModConfig.getInstance().getCullingBehavior() == CullingBehavior.PAUSE_AND_HIDE) {
+                    continue;
+                }
             }
 
             // [核心] 唤醒与同步
             // 当再次可见时，检查是否需要 Seek
-            double now = ReplayModUtil.getCurrentAnimationTime();
+            double now = CurrentTimeUtil.getCurrentAnimationTime();
             double elapsed = now - instance.startSeconds;
             int expectedFrame = (int) (elapsed * instance.targetFps);
 
@@ -825,7 +829,7 @@ public class ClientAnimationManager {
             streamerThread.start();
 
             // 更新时间锚点
-            this.startSeconds = ReplayModUtil.getCurrentAnimationTime();
+            this.startSeconds = CurrentTimeUtil.getCurrentAnimationTime();
             this.renderedFrames = 0;
             this.isFinished = false;
         }
@@ -841,8 +845,8 @@ public class ClientAnimationManager {
             if (!isStarted)
                 return null;
 
-            Double replayTime = ReplayModUtil.getReplayTime();
-            double now = ReplayModUtil.getCurrentAnimationTime();
+            Double replayTime = CurrentTimeUtil.getReplayTime();
+            double now = CurrentTimeUtil.getCurrentAnimationTime();
             double elapsed = now - startSeconds;
 
             int totalFrames = streamer.getTotalFrames();
@@ -888,7 +892,7 @@ public class ClientAnimationManager {
 
             ByteBuffer newData = null;
 
-            if (ReplayModUtil.isRendering()) {
+            if (CurrentTimeUtil.isRendering()) {
                 // Rendering mode: Block wait
                 if (renderedFrames < expectedFrame) {
                     try {

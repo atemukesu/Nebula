@@ -246,7 +246,6 @@ public class PerformanceStats {
         return targetFboId;
     }
 
-    // ========== New Stats ==========
     private float emissiveStrength = 1.0f;
     private boolean renderInGame = true;
 
@@ -342,7 +341,7 @@ public class PerformanceStats {
 
     // ========== 历史数据 Getters ==========
 
-    // 直接返回 List，避免每帧复制带来的性能开销 (GC)
+    // 直接返回 List，避免每帧复制带来的性能开销
     // 调用者只能在渲染线程读取，且不应修改
 
     public LinkedList<Integer> getParticleCountHistory() {

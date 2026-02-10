@@ -3,10 +3,9 @@ package com.atemukesu.nebula.client.util;
 import com.atemukesu.nebula.Nebula;
 
 /**
- * Replay Mod 工具类
- * 通过直接调用 ReplayMod 的公开 API 获取时间，而不是 Mixin 注入
+ * 获取当前动画时间的工具类
  */
-public class ReplayModUtil {
+public class CurrentTimeUtil {
 
     private static boolean isRendering = false;
     private static int cachedVideoFps = 60;

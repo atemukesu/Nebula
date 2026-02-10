@@ -1,6 +1,7 @@
 package com.atemukesu.nebula.config;
 
 import com.atemukesu.nebula.client.enums.BlendMode;
+import com.atemukesu.nebula.client.enums.CullingBehavior;
 
 public class ModConfig {
     private static ModConfig INSTANCE;
@@ -15,6 +16,7 @@ public class ModConfig {
     // 渲染选项
     private BlendMode blendMode;
     private float emissiveStrength;
+    private CullingBehavior cullingBehavior;
 
     public ModConfig() {
         // 默认在游戏内渲染粒子
@@ -27,6 +29,7 @@ public class ModConfig {
         this.blendMode = BlendMode.ADDITIVE;
         // 默认使用用户自定义的亮度
         this.emissiveStrength = 2.0f;
+        this.cullingBehavior = CullingBehavior.SIMULATE_ONLY;
     }
 
     public static ModConfig getInstance() {
@@ -102,5 +105,25 @@ public class ModConfig {
      */
     public void setEmissiveStrength(float emissiveStrength) {
         this.emissiveStrength = emissiveStrength;
+    }
+
+    // 粒子被 AABB 包围盒测试剔除时的处理方式
+
+    /**
+     * 获取粒子被 AABB 包围盒测试剔除时的处理方式
+     * 
+     * @return 粒子被 AABB 包围盒测试剔除时的处理方式
+     */
+    public CullingBehavior getCullingBehavior() {
+        return cullingBehavior;
+    }
+
+    /**
+     * 设置粒子被 AABB 包围盒测试剔除时的处理方式
+     * 
+     * @param cullingBehavior 粒子被 AABB 包围盒测试剔除时的处理方式
+     */
+    public void setCullingBehavior(CullingBehavior cullingBehavior) {
+        this.cullingBehavior = cullingBehavior;
     }
 }

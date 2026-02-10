@@ -21,6 +21,8 @@
     "gui.nebula.config.blend_mode.additive": "Additive Blend",
     "gui.nebula.config.blend_mode.alpha": "Alpha Blend",
     "gui.nebula.config.blend_mode.oit": "OIT (Order Independent)",
+    "gui.nebula.config.emissive_strength": "Emissive Strength",
+    "gui.nebula.config.emissive_strength.desc": "Controls the emissive strength of particles. Higher values make particles glow brighter.",
     "command.nebula.client.reload.success": "Animations reloaded successfully!",
     "command.nebula.client.reload.failed": "Failed to reload animations. See log for details."
 }

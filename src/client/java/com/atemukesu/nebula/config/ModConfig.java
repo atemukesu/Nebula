@@ -12,6 +12,7 @@ public class ModConfig {
 
     // 渲染选项
     private BlendMode blendMode;
+    private float emissiveStrength;
 
     public ModConfig() {
         // 默认在游戏内渲染粒子
@@ -22,6 +23,8 @@ public class ModConfig {
         this.showCharts = true;
         // 默认使用加法混合
         this.blendMode = BlendMode.ADDITIVE;
+        // 默认使用用户自定义的亮度
+        this.emissiveStrength = 2.0f;
     }
 
     public static ModConfig getInstance() {
@@ -79,5 +82,23 @@ public class ModConfig {
      */
     public void setBlendMode(BlendMode blendMode) {
         this.blendMode = blendMode;
+    }
+
+    /**
+     * 获取粒子发光强度
+     * 
+     * @return 粒子发光强度
+     */
+    public float getEmissiveStrength() {
+        return emissiveStrength;
+    }
+
+    /**
+     * 设置粒子发光强度
+     * 
+     * @param emissiveStrength 粒子发光强度
+     */
+    public void setEmissiveStrength(float emissiveStrength) {
+        this.emissiveStrength = emissiveStrength;
     }
 }

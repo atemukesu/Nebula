@@ -25,7 +25,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.IntStream;
 
 /**
- * NBL 流式加载器 (SSBO 优化版)
+ * <h1>
+ * NBL 流式加载器 (For SSBO)
+ * </h1>
+ * <hr>
  * <p>
  * 负责从磁盘读取压缩的 NBL 文件，在 CPU 端进行 Zstd 解压和状态计算，
  * 并将数据打包成 GPU SSBO 友好的格式 (std430 布局)。
@@ -612,8 +615,10 @@ public class NblStreamer implements Runnable {
     }
 
     /**
-     * [重要] 归还 Buffer 到池中
+     * 归还 Buffer 到池中
      * 必须在渲染完成后调用！
+     * 
+     * @param buf 要归还的 Buffer
      */
     public static void releaseBuffer(ByteBuffer buf) {
         // EOF buffer (cap=0) 不回收，其他回收

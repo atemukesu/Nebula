@@ -71,7 +71,21 @@ public class NebulaYACLConfig {
                                                                                 .formatValue(mode -> Text.translatable(
                                                                                                 mode.getTranslationKey())))
                                                                 .build())
+                                                .option(Option.<Float>createBuilder()
+                                                                .name(Text.translatable(
+                                                                                "gui.nebula.config.emissive_strength"))
+                                                                .description(OptionDescription.of(Text.translatable(
+                                                                                "gui.nebula.config.emissive_strength.desc")))
+                                                                .binding(
+                                                                                2.0f,
+                                                                                config::getEmissiveStrength,
+                                                                                config::setEmissiveStrength)
+                                                                .controller(opt -> FloatControllerBuilder.create(opt)
+                                                                                .minValue(0.0f)
+                                                                                .maxValue(10.0f))
+                                                                .build())
                                                 .build())
+
                                 .save(ConfigManager::saveConfig)
                                 .build()
                                 .generateScreen(parent);

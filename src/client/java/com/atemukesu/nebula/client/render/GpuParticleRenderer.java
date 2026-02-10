@@ -345,6 +345,9 @@ public class GpuParticleRenderer {
 
         // 3. 恢复 OpenGL 状态
         RenderSystem.depthMask(true);
+        RenderSystem.depthMask(true);
+        // 【CRITICAL FIX】显式重置 BlendFunc，防止影响原版渲染
+        GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
         RenderSystem.defaultBlendFunc();
         RenderSystem.enableCull();
         RenderSystem.enableDepthTest();
@@ -419,8 +422,14 @@ public class GpuParticleRenderer {
             GL20.glUniform3f(uOrigin, originX, originY, originZ);
         if (uPartialTicks != -1)
             GL20.glUniform1f(uPartialTicks, partialTicks);
+        if (uPartialTicks != -1)
+            GL20.glUniform1f(uPartialTicks, partialTicks);
+
+        // 动态设置 HDR 强度: Iris 开启时使用用户自定义的亮度，关闭时保持原色(1.0)
+        // 移至此处以确保同时应用于 Pass 1 (Opaque) 和 Pass 2 (Translucent)
+        float currentEmissive = IrisUtil.isIrisRenderingActive() ? ModConfig.getInstance().getEmissiveStrength() : 1.0f;
         if (uEmissiveStrength != -1)
-            GL20.glUniform1f(uEmissiveStrength, emissiveStrength);
+            GL20.glUniform1f(uEmissiveStrength, currentEmissive);
 
         // Textures
         if (useTexture && ParticleTextureManager.isInitialized()) {
@@ -448,6 +457,12 @@ public class GpuParticleRenderer {
 
         RenderSystem.depthMask(true);
         RenderSystem.enableBlend();
+
+        // 【CRITICAL FIX】
+        // 显式重置 GL Blend Func，防止上一次 Batch 的 Pass 2 (OIT Blend) 状态残留。
+        // RenderSystem 可能会误以为状态未变而跳过指令，导致第二个 Batch 的不透明粒子
+        // 继承了 OIT 的混合模式 (Additive)，从而变成半透明/发亮。
+        GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
         RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
 
         GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
@@ -465,11 +480,6 @@ public class GpuParticleRenderer {
 
         if (uRenderPass != -1)
             GL20.glUniform1i(uRenderPass, 1); // Translucent Pass
-
-        // 动态设置 HDR 强度: Iris 开启时增强亮度(1.5)，关闭时保持原色(1.0)
-        float currentEmissive = IrisUtil.isIrisRenderingActive() ? 1.5f : 1.0f;
-        if (uEmissiveStrength != -1)
-            GL20.glUniform1f(uEmissiveStrength, currentEmissive);
 
         RenderSystem.depthMask(false); // OIT 核心：不写深度
         RenderSystem.enableBlend();
@@ -498,15 +508,21 @@ public class GpuParticleRenderer {
         }
     }
 
-    // TODO: 2. 当粒子距离相机过远时，会异常发亮
-    // TODO: 3. 粒子光效不柔和
-
     /**
      * 执行 SSBO 实例化渲染
      * 
-     * @param bindFramebuffer 是否绑定 MC 主 Framebuffer。
-     *                        在 Iris 环境下应传入 false，保持 Iris 的渲染目标。
-     *                        在原版环境下应传入 true。
+     * @param data            粒子数据
+     * @param particleCount   粒子数量
+     * @param modelViewMatrix 模型视图矩阵
+     * @param projMatrix      投影矩阵
+     * @param cameraRight     相机右向量
+     * @param cameraUp        相机上向量
+     * @param originX         原点 X 坐标
+     * @param originY         原点 Y 坐标
+     * @param originZ         原点 Z 坐标
+     * @param useTexture      是否使用纹理
+     * @param partialTicks    部分 ticks
+     * @param bindFramebuffer 是否绑定 MC 主 Framebuffer
      */
     public static void renderInstanced(ByteBuffer data, int particleCount,
             Matrix4f modelViewMatrix, Matrix4f projMatrix,
@@ -585,8 +601,8 @@ public class GpuParticleRenderer {
         if (uPartialTicks != -1)
             GL20.glUniform1f(uPartialTicks, partialTicks);
 
-        // 动态设置 HDR 强度: Iris 开启时增强亮度(1.5)，关闭时保持原色(1.0)
-        float currentEmissive = IrisUtil.isIrisRenderingActive() ? 1.5f : 1.0f;
+        // 动态设置 HDR 强度: Iris 开启时增强亮度(3.0)，关闭时保持原色(1.0)
+        float currentEmissive = IrisUtil.isIrisRenderingActive() ? 3.0f : 1.0f;
         if (uEmissiveStrength != -1)
             GL20.glUniform1f(uEmissiveStrength, currentEmissive);
 
@@ -615,6 +631,8 @@ public class GpuParticleRenderer {
 
             RenderSystem.depthMask(true);
             RenderSystem.enableBlend();
+            // 【CRITICAL FIX】显式重置，防止 OIT 状态污染
+            GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
             RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
             // 绘制实体粒子
             GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);

@@ -21,6 +21,8 @@
     "gui.nebula.config.blend_mode.additive": "加算ブレンド",
     "gui.nebula.config.blend_mode.alpha": "アルファブレンド",
     "gui.nebula.config.blend_mode.oit": "OIT (順序非依存)",
+    "gui.nebula.config.emissive_strength": "エミッシブ強度",
+    "gui.nebula.config.emissive_strength.desc": "パーティクルのエミッシブ強度を制御します。値が高いほどパーティクルがより輝くようになります。",
     "command.nebula.client.reload.success": "アニメーションが正常に再読み込みされました！",
     "command.nebula.client.reload.failed": "アニメーションの再読み込みに失敗しました。詳細はログを確認してください。"
 }

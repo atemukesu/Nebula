@@ -21,6 +21,8 @@
     "gui.nebula.config.blend_mode.additive": "加法混合",
     "gui.nebula.config.blend_mode.alpha": "标准混合",
     "gui.nebula.config.blend_mode.oit": "OIT (与顺序无关透明度)",
+    "gui.nebula.config.emissive_strength": "发光强度",
+    "gui.nebula.config.emissive_strength.desc": "控制粒子的发光强度。值越高，粒子越亮。",
     "command.nebula.client.reload.success": "动画重载成功！",
     "command.nebula.client.reload.failed": "动画重载失败。详情请查看日志。"
 }

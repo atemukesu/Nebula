@@ -15,6 +15,9 @@ public class ConfigManager {
     private static final Path CONFIG_FILE = FabricLoader.getInstance().getConfigDir().resolve("nebula.json");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
+    /**
+     * 加载配置
+     */
     public static void loadConfig() {
         try {
             if (CONFIG_FILE.toFile().exists()) {
@@ -37,6 +40,9 @@ public class ConfigManager {
         }
     }
 
+    /**
+     * 保存配置
+     */
     public static void saveConfig() {
         try (FileWriter writer = new FileWriter(CONFIG_FILE.toFile())) {
             GSON.toJson(ModConfig.getInstance(), writer);

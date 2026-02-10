@@ -179,6 +179,8 @@ public class ClientAnimationManager {
         double maxRenderDistance = client.options.getClampedViewDistance() * 16.0 * 2.0; // 扩大 2 倍以确保边缘不被剔除
 
         for (AnimationInstance instance : renderList) {
+            boolean isVisible = true;
+
             // 【改进剔除】检查动画包围盒与相机的距离
             // 使用 BBox 最近点距离检查，防止大体积粒子特效被错误剔除
             Box bbox = instance.getWorldBoundingBox();
@@ -191,14 +193,14 @@ public class ClientAnimationManager {
                 double distSq = dx * dx + dy * dy + dz * dz;
 
                 if (distSq > maxRenderDistance * maxRenderDistance) {
-                    continue; // 确实远，剔除
+                    isVisible = false; // 确实远，剔除，但后台需继续从磁盘读数据
                 }
             } else {
                 // 回退逻辑：如果还没有 BBox（第一帧加载中），使用原点检查
                 Vec3d origin = instance.getOrigin();
                 double distSq = origin.squaredDistanceTo(cameraPos);
                 if (distSq > maxRenderDistance * maxRenderDistance) {
-                    continue;
+                    isVisible = false;
                 }
             }
 
@@ -208,9 +210,12 @@ public class ClientAnimationManager {
             // 确保纹理已加载（第一次渲染时）
             instance.ensureTexturesLoaded();
 
+            // 【关键优化】即使不可见，也必须调用 getNextFrame
+            // 这保证了后台 IO 线程持续读取数据，renderedFrames 紧跟当前时间
+            // 从而避免因长时间不可见导致时间差过大，触发 Seek 操作引发卡顿
             ByteBuffer frameData = instance.getNextFrame();
 
-            if (frameData != null && frameData.remaining() > 0) {
+            if (isVisible && frameData != null && frameData.remaining() > 0) {
                 renderedInstancesCount++;
                 ByteBuffer readBuffer = frameData.slice();
 
@@ -276,7 +281,11 @@ public class ClientAnimationManager {
             PerformanceStats stats = PerformanceStats.getInstance();
             stats.setParticleCount(totalParticles);
             stats.setInstanceCount(renderedInstancesCount);
-            stats.setEmissiveStrength(ModConfig.getInstance().getEmissiveStrength());
+            float effectiveEmissive = IrisUtil.isIrisRenderingActive()
+                    ? ModConfig.getInstance().getEmissiveStrength()
+                    : 1.0f; // 和实际值保持一致
+
+            stats.setEmissiveStrength(effectiveEmissive);
             stats.setRenderInGame(ModConfig.getInstance().shouldRenderInGame());
             stats.endFrame();
         }
@@ -360,27 +369,33 @@ public class ClientAnimationManager {
         double maxRenderDistance = client.options.getClampedViewDistance() * 16.0 * 2.0;
 
         for (AnimationInstance instance : renderList) {
+            boolean isVisible = true;
+
             // 【视锥剔除】优先使用完整的视锥剔除
             if (frustum != null) {
                 Box worldBbox = instance.getWorldBoundingBox();
                 if (worldBbox != null && !frustum.isVisible(worldBbox)) {
-                    continue;
+                    isVisible = false;
                 }
             } else {
                 // 降级：简化距离剔除
                 Vec3d origin = instance.getOrigin();
                 double distSq = origin.squaredDistanceTo(cameraPos);
                 if (distSq > maxRenderDistance * maxRenderDistance) {
-                    continue;
+                    isVisible = false;
                 }
             }
 
             // 确保纹理已加载（第一次渲染时）
             instance.ensureTexturesLoaded();
 
+            // 【关键优化】即使不可见，也必须调用 getNextFrame
+            // 这保证了后台 IO 线程持续读取数据，renderedFrames 紧跟当前时间
+            // 从而避免因长时间不可见导致时间差过大，触发 Seek 操作引发卡顿
             ByteBuffer frameData = instance.getNextFrame();
 
-            if (frameData != null && frameData.remaining() > 0) {
+            if (isVisible && frameData != null && frameData.remaining() > 0) {
+                renderedInstancesCount++;
                 ByteBuffer readBuffer = frameData.slice();
 
                 int particleCount = readBuffer.remaining() / AnimationFrame.BYTES_PER_PARTICLE;
@@ -430,18 +445,22 @@ public class ClientAnimationManager {
                             partialTicks);
                 }
             }
+        }
 
-            currentParticleCount = totalParticles;
+        currentParticleCount = totalParticles;
 
-            if (shouldCollectStats) {
-                // 更新性能统计
-                PerformanceStats stats = PerformanceStats.getInstance();
-                stats.setParticleCount(totalParticles);
-                stats.setInstanceCount(renderedInstancesCount);
-                stats.setEmissiveStrength(ModConfig.getInstance().getEmissiveStrength());
-                stats.setRenderInGame(ModConfig.getInstance().shouldRenderInGame());
-                stats.endFrame();
-            }
+        if (shouldCollectStats) {
+            // 更新性能统计
+            PerformanceStats stats = PerformanceStats.getInstance();
+            stats.setParticleCount(totalParticles);
+            stats.setInstanceCount(renderedInstancesCount);
+            float effectiveEmissive = IrisUtil.isIrisRenderingActive()
+                    ? ModConfig.getInstance().getEmissiveStrength()
+                    : 1.0f;
+
+            stats.setEmissiveStrength(effectiveEmissive);
+            stats.setRenderInGame(ModConfig.getInstance().shouldRenderInGame());
+            stats.endFrame();
         }
 
         if (!renderList.isEmpty()) {
@@ -543,12 +562,14 @@ public class ClientAnimationManager {
         Frustum frustum = context.frustum();
 
         for (AnimationInstance instance : renderList) {
+            boolean isVisible = true;
+
             // 【视锥剔除】检查动画的 AABB 是否在视锥内
             Box worldBbox = instance.getWorldBoundingBox();
             if (frustum != null && worldBbox != null) {
                 if (!frustum.isVisible(worldBbox)) {
-                    // AABB 不在视锥内，跳过渲染
-                    continue;
+                    // AABB 不在视锥内
+                    isVisible = false;
                 }
             } else {
                 // 【备用剔除】距离剔除
@@ -559,13 +580,13 @@ public class ClientAnimationManager {
                     double dz = Math.max(worldBbox.minZ - cameraPos.z, Math.max(0, cameraPos.z - worldBbox.maxZ));
                     double distSq = dx * dx + dy * dy + dz * dz;
                     if (distSq > maxRenderDistance * maxRenderDistance) {
-                        continue;
+                        isVisible = false;
                     }
                 } else {
                     Vec3d origin = instance.getOrigin();
                     double distSq = origin.squaredDistanceTo(cameraPos);
                     if (distSq > maxRenderDistance * maxRenderDistance) {
-                        continue;
+                        isVisible = false;
                     }
                 }
             }
@@ -573,10 +594,11 @@ public class ClientAnimationManager {
             // 确保纹理已加载（第一次渲染时）
             instance.ensureTexturesLoaded();
 
+            // 【关键优化】即使不可见，也必须调用 getNextFrame
             ByteBuffer frameData = instance.getNextFrame();
 
             // 使用 slice() 创建缓冲区视图
-            if (frameData != null && frameData.remaining() > 0) {
+            if (isVisible && frameData != null && frameData.remaining() > 0) {
                 renderedInstancesCount++;
                 ByteBuffer readBuffer = frameData.slice();
 
@@ -603,7 +625,6 @@ public class ClientAnimationManager {
                     partialTicks = 1;
 
                 // 使用 GPU 渲染器绘制
-                // 原版模式：传入 bindFramebuffer=true
                 if (isOIT) {
                     GpuParticleRenderer.renderOITBatch(
                             readBuffer,
@@ -645,7 +666,11 @@ public class ClientAnimationManager {
             PerformanceStats stats = PerformanceStats.getInstance();
             stats.setParticleCount(totalParticles);
             stats.setInstanceCount(renderedInstancesCount);
-            stats.setEmissiveStrength(ModConfig.getInstance().getEmissiveStrength());
+            float effectiveEmissive = IrisUtil.isIrisRenderingActive()
+                    ? ModConfig.getInstance().getEmissiveStrength()
+                    : 1.0f;
+
+            stats.setEmissiveStrength(effectiveEmissive);
             stats.setRenderInGame(ModConfig.getInstance().shouldRenderInGame());
             stats.endFrame();
         }

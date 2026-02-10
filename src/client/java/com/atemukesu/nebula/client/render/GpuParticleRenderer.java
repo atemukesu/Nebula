@@ -574,7 +574,7 @@ public class GpuParticleRenderer {
             GL20.glUniform3f(uCameraUp, cameraUp[0], cameraUp[1], cameraUp[2]);
 
         // Emissive Strength
-        float currentEmissive = IrisUtil.isIrisRenderingActive() ? 3.0f : 1.0f;
+        float currentEmissive = IrisUtil.isIrisRenderingActive() ? ModConfig.getInstance().getEmissiveStrength() : 1.0f;
         if (uEmissiveStrength != -1)
             GL20.glUniform1f(uEmissiveStrength, currentEmissive);
     }

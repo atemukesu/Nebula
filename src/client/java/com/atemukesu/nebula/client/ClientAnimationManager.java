@@ -714,8 +714,7 @@ public class ClientAnimationManager {
             }
 
             // [超时检测] 通用：动画已播放完毕，应当停止并销毁
-            // 添加 0.5 秒缓冲时间，确保最后一帧有足够时间被渲染
-            if (elapsed > duration + 0.5) {
+            if (elapsed > duration) {
                 stop();
                 return null;
             }

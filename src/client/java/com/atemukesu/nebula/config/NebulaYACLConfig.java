@@ -83,8 +83,8 @@ public class NebulaYACLConfig {
                                                                                 config::setEmissiveStrength)
                                                                 .controller(opt -> FloatSliderControllerBuilder
                                                                                 .create(opt)
-                                                                                .min(0.0f)
-                                                                                .max(10.0f))
+                                                                                .range(1.0f, 10.0f)
+                                                                                .step(0.1f))
                                                                 .build())
                                                 .build())
 

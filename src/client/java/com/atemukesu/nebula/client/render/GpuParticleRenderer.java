@@ -251,6 +251,251 @@ public class GpuParticleRenderer {
         Nebula.LOGGER.info("  IrisMRT={}, RenderPass={}", uIrisMRT, uRenderPass);
     }
 
+    // Global OIT (Order Independent Transparency) Support
+    // ==========================================
+
+    // 保存 Global OIT 状态
+    private static int globalOitTargetFboId = -1;
+    private static boolean globalOitActive = false;
+    private static boolean globalOitCleared = false; // 确保每帧只清空一次
+    @SuppressWarnings("unused")
+    private static int globalOitViewportWidth = 0;
+    @SuppressWarnings("unused")
+    private static int globalOitViewportHeight = 0;
+
+    /**
+     * 开始 OIT 全局阶段
+     * 必须在批量绘制粒子之前调用。
+     * 只做初始化，不立即绑定 OIT FBO（因为 Pass 1 需要绘制到主 FBO）
+     */
+    public static void beginOIT(int targetFboId, int viewportWidth, int viewportHeight) {
+        if (!initialized || oitFbo == null || oitProgram <= 0)
+            return;
+
+        RenderSystem.assertOnRenderThread();
+
+        // 保存状态供后续使用
+        globalOitTargetFboId = targetFboId;
+        globalOitActive = true;
+        globalOitCleared = false; // 新帧开始，重置清空标志
+        globalOitViewportWidth = viewportWidth;
+        globalOitViewportHeight = viewportHeight;
+
+        // 调整 OIT FBO 大小
+        oitFbo.resize(viewportWidth, viewportHeight);
+        // 注意：这里不绑定 OIT FBO，因为 Pass 1 需要绘制到主 FBO
+    }
+
+    /**
+     * 结束 OIT 全局阶段并合成
+     * 必须在所有粒子绘制完成后调用。
+     * - 切回主 FBO
+     * - 执行全屏合成 Pass
+     * - 恢复状态
+     * 
+     * @param targetFboId 目标 FBO ID
+     */
+    public static void endOITAndComposite(int targetFboId) {
+        if (!initialized || oitFbo == null || oitProgram <= 0)
+            return;
+
+        RenderSystem.assertOnRenderThread();
+
+        // Pass 3: Composite
+        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, targetFboId);
+
+        GL20.glUseProgram(oitProgram);
+        RenderSystem.depthMask(false);
+        RenderSystem.enableBlend();
+        RenderSystem.blendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
+
+        GL13.glActiveTexture(GL13.GL_TEXTURE0);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, oitFbo.getAccumTexture());
+        if (uOitAccum != -1)
+            GL20.glUniform1i(uOitAccum, 0);
+
+        GL13.glActiveTexture(GL13.GL_TEXTURE1);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, oitFbo.getRevealTexture());
+        if (uOitReveal != -1)
+            GL20.glUniform1i(uOitReveal, 1);
+
+        // Draw Quad
+        GL30.glBindVertexArray(vao);
+        GL20.glEnableVertexAttribArray(0); // Pos
+        GL20.glEnableVertexAttribArray(1); // UV
+        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, quadVbo);
+        // 重置一下指针以防万一
+        GL20.glVertexAttribPointer(0, 3, GL11.GL_FLOAT, false, 20, 0);
+        GL20.glVertexAttribPointer(1, 2, GL11.GL_FLOAT, false, 20, 12);
+
+        GL31.glDrawArrays(GL11.GL_TRIANGLE_FAN, 0, 4);
+
+        GL30.glBindVertexArray(0);
+
+        // === 完整状态恢复 ===
+
+        // 1. 重置 Global OIT 状态
+        globalOitActive = false;
+        globalOitTargetFboId = -1;
+        globalOitCleared = false;
+
+        // 2. 正确重置 Shader (必须通知 RenderSystem！)
+        GL20.glUseProgram(0);
+        RenderSystem.setShader(() -> null);
+
+        // 3. 恢复 OpenGL 状态
+        RenderSystem.depthMask(true);
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.enableCull();
+        RenderSystem.enableDepthTest();
+        RenderSystem.depthFunc(GL11.GL_LEQUAL);
+
+        // 4. 解绑粒子纹理
+        ParticleTextureManager.unbind();
+
+        // 5. 重置纹理绑定 (使用 RenderSystem 确保状态同步)
+        RenderSystem.activeTexture(GL13.GL_TEXTURE1);
+        RenderSystem.bindTexture(0);
+        RenderSystem.activeTexture(GL13.GL_TEXTURE0);
+        RenderSystem.bindTexture(0);
+    }
+
+    /**
+     * OIT 批量绘制 (Two-Pass: Opaque + Translucent)
+     * 
+     * 执行两次绘制：
+     * - Pass 1: 不透明粒子绘制到主 FBO
+     * - Pass 2: 半透明粒子绘制到 OIT FBO（积累阶段）
+     * 
+     * 必须在 beginOIT 之后、endOITAndComposite 之前调用。
+     */
+    public static void renderOITBatch(ByteBuffer data, int particleCount,
+            Matrix4f modelViewMatrix, Matrix4f projMatrix,
+            float[] cameraRight, float[] cameraUp,
+            float originX, float originY, float originZ,
+            boolean useTexture, float partialTicks) {
+
+        if (particleCount <= 0 || data == null || !initialized || !shaderCompiled)
+            return;
+
+        if (!globalOitActive || oitFbo == null) {
+            Nebula.LOGGER.warn("[GpuParticleRenderer] renderOITBatch called without beginOIT!");
+            return;
+        }
+
+        RenderSystem.assertOnRenderThread();
+
+        int dataSize = data.remaining();
+        lastFrameUsedBytes = dataSize;
+
+        // Ensure buffer capacity
+        if (dataSize > currentBufferSize) {
+            expandBuffers(dataSize);
+        }
+
+        // Upload Data
+        int ssbo;
+        if (useFallback) {
+            ssbo = uploadDataFallback(data, dataSize);
+        } else {
+            ssbo = uploadDataPMB(data, dataSize);
+        }
+
+        // Bind VAO & SSBO
+        GL30.glBindVertexArray(vao);
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, SSBO_BINDING_INDEX, ssbo);
+
+        // Use Particle Shader
+        GL20.glUseProgram(shaderProgram);
+
+        // Upload Uniforms
+        uploadMatrix(uModelViewMat, modelViewMatrix);
+        uploadMatrix(uProjMat, projMatrix);
+        if (uCameraRight != -1)
+            GL20.glUniform3f(uCameraRight, cameraRight[0], cameraRight[1], cameraRight[2]);
+        if (uCameraUp != -1)
+            GL20.glUniform3f(uCameraUp, cameraUp[0], cameraUp[1], cameraUp[2]);
+        if (uOrigin != -1)
+            GL20.glUniform3f(uOrigin, originX, originY, originZ);
+        if (uPartialTicks != -1)
+            GL20.glUniform1f(uPartialTicks, partialTicks);
+        if (uEmissiveStrength != -1)
+            GL20.glUniform1f(uEmissiveStrength, emissiveStrength);
+
+        // Textures
+        if (useTexture && ParticleTextureManager.isInitialized()) {
+            ParticleTextureManager.bind(0);
+            if (uSampler0 != -1)
+                GL20.glUniform1i(uSampler0, 0);
+            if (uUseTexture != -1)
+                GL20.glUniform1i(uUseTexture, 1);
+        } else {
+            if (uUseTexture != -1)
+                GL20.glUniform1i(uUseTexture, 0);
+        }
+
+        RenderSystem.disableCull();
+        RenderSystem.enableDepthTest();
+        RenderSystem.depthFunc(GL11.GL_LEQUAL);
+
+        // ==========================================
+        // Pass 1: 不透明粒子 (Opaque)
+        // 目标: 主 FBO
+        // ==========================================
+        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, globalOitTargetFboId);
+        if (uRenderPass != -1)
+            GL20.glUniform1i(uRenderPass, 0); // Opaque Pass
+
+        RenderSystem.depthMask(true);
+        RenderSystem.enableBlend();
+        RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
+
+        GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
+
+        // ==========================================
+        // Pass 2: 半透明粒子 (Translucent)
+        // 目标: OIT FBO
+        // ==========================================
+        oitFbo.bindAndShareDepth(globalOitTargetFboId);
+        // 只在第一个 batch 时清空 OIT FBO
+        if (!globalOitCleared) {
+            oitFbo.clear();
+            globalOitCleared = true;
+        }
+
+        if (uRenderPass != -1)
+            GL20.glUniform1i(uRenderPass, 1); // Translucent Pass
+
+        RenderSystem.depthMask(false); // OIT 核心：不写深度
+        RenderSystem.enableBlend();
+        // OIT 专用混合模式
+        GL40.glBlendFunci(0, GL11.GL_ONE, GL11.GL_ONE); // Accum
+        GL40.glBlendFunci(1, GL11.GL_ZERO, GL11.GL_ONE_MINUS_SRC_COLOR); // Reveal
+
+        GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
+
+        // Cleanup (部分，完整清理在 endOITAndComposite 中)
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, SSBO_BINDING_INDEX, 0);
+        GL30.glBindVertexArray(0);
+
+        // Stats
+        PerformanceStats stats = PerformanceStats.getInstance();
+        stats.setOrigin(originX, originY, originZ);
+        stats.setLastGlError(GL11.glGetError(), "Post-OIT-Batch");
+
+        // PMB Fence Logic
+        if (!useFallback) {
+            if (fences[currentBufferIndex] != 0) {
+                GL32.glDeleteSync(fences[currentBufferIndex]);
+            }
+            fences[currentBufferIndex] = GL32.glFenceSync(GL32.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+            currentBufferIndex = (currentBufferIndex + 1) % BUFFER_COUNT;
+        }
+    }
+
+    // TODO: 2. 当粒子距离相机过远时，会异常发亮
+    // TODO: 3. 粒子光效不柔和
+
     /**
      * 执行 SSBO 实例化渲染
      * 
@@ -361,7 +606,8 @@ public class GpuParticleRenderer {
                 GL20.glUniform1i(uRenderPass, 0); // Opaque Pass
 
             RenderSystem.depthMask(true);
-            RenderSystem.disableBlend();
+            RenderSystem.enableBlend();
+            RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
             // 绘制实体粒子
             GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
 
@@ -416,18 +662,45 @@ public class GpuParticleRenderer {
             GL31.glDrawArrays(GL11.GL_TRIANGLE_FAN, 0, 4);
 
         } else {
-            // === 传统渲染路径 (Single Pass) ===
+            // === 传统渲染路径 (Two-Pass: Opaque + Translucent) ===
+            //
+            // 逻辑：
+            // Pass 1: 不透明粒子 - 开启深度写入，使用 Alpha 混合，uRenderPass = 0
+            // Pass 2: 透明粒子 - 关闭深度写入，使用配置的混合模式，uRenderPass = 1
 
-            // 【Iris 兼容】在使用 Iris 时，显式绑定其半透明 Framebuffer 以获得正确的深度和颜色缓冲
-
-            // 根据配置应用混合模式
-            applyBlendMode(blendMode);
-
-            // 确保 RenderPass 为默认 (全部绘制 或 忽略)
-            // 如果 Shader 里有 RenderPass 逻辑，我们需要设一个能通过所有粒子的值，或者 Shader 默认处理
-            // 这里为了安全，假设普通模式不区分 Pass
+            // ==========================================
+            // Pass 1: 不透明粒子 (Opaque)
+            // ==========================================
             if (uRenderPass != -1)
-                GL20.glUniform1i(uRenderPass, 2); // 2 = All
+                GL20.glUniform1i(uRenderPass, 0); // Opaque Pass
+
+            RenderSystem.depthMask(true); // 关键：不透明粒子必须写深度！
+            RenderSystem.enableBlend();
+            RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
+
+            GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
+
+            // ==========================================
+            // Pass 2: 透明粒子 (Translucent)
+            // ==========================================
+            if (uRenderPass != -1)
+                GL20.glUniform1i(uRenderPass, 1); // Translucent Pass
+
+            RenderSystem.depthMask(false); // 透明粒子不写深度
+
+            // 根据配置应用混合模式 (只用于透明粒子)
+            switch (blendMode) {
+                case ADDITIVE:
+                    // 加法混合：发光粒子效果
+                    RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE);
+                    break;
+                case ALPHA:
+                default:
+                    // 标准 Alpha 混合
+                    RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA,
+                            GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
+                    break;
+            }
 
             GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
         }
@@ -586,49 +859,6 @@ public class GpuParticleRenderer {
             matrix.get(matrixBuffer);
             matrixBuffer.rewind();
             GL20.glUniformMatrix4fv(location, false, matrixBuffer);
-        }
-    }
-
-    /**
-     * 根据混合模式配置应用不同的 OpenGL 混合状态
-     * 
-     * @param blendMode 混合模式
-     */
-    private static void applyBlendMode(BlendMode blendMode) {
-        switch (blendMode) {
-            case ADDITIVE:
-                // 加法混合：粒子自带发光效果，重叠区域亮度累加
-                // 适合火焰、光束等发光粒子
-                RenderSystem.enableBlend();
-                RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE);
-                RenderSystem.depthMask(false); // 透明粒子不写深度
-                break;
-
-            case ALPHA:
-                // 标准 Alpha 混合：颜色准确，适合不透明/半透明粒子
-                // 需要正确的渲染顺序
-                RenderSystem.enableBlend();
-                RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA,
-                        GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
-                RenderSystem.depthMask(false); // 透明粒子不写深度
-                break;
-
-            case OIT:
-                // OIT (Order Independent Transparency)
-                // 注意：正常的 OIT 渲染逻辑在 renderInstanced 的专用 Pass 中处理
-                // 如果代码运行到这里，说明 OIT 资源初始化失败或被禁用，回退到标准 Alpha 混合
-                RenderSystem.enableBlend();
-                RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA,
-                        GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
-                RenderSystem.depthMask(false);
-                break;
-
-            default:
-                // 默认使用加法混合
-                RenderSystem.enableBlend();
-                RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE);
-                RenderSystem.depthMask(false);
-                break;
         }
     }
 

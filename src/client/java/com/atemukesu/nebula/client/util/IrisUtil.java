@@ -1,133 +1,134 @@
 package com.atemukesu.nebula.client.util;
 
 import com.atemukesu.nebula.Nebula;
+import com.mojang.blaze3d.systems.RenderSystem;
 import net.fabricmc.loader.api.FabricLoader;
+import org.lwjgl.opengl.GL30;
+import org.lwjgl.opengl.GL11;
 
-/**
- * Iris Shaders 工具类
- * 用于检测 Iris 是否存在以及光影是否开启
- */
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+
 public class IrisUtil {
 
     private static Boolean irisAvailable = null;
-    private static boolean hasLoggedIrisDetected = false;
-    private static boolean hasLoggedShaderActive = false;
-    private static boolean hasLoggedShaderOff = false;
 
     /**
-     * 检查 Iris mod 是否已安装（使用 Fabric Loader API，不需要反射）
+     * 检查 Iris 是否已安装
+     * 
+     * @return 是否已安装 Iris
      */
     public static boolean isIrisInstalled() {
         if (irisAvailable == null) {
             irisAvailable = FabricLoader.getInstance().isModLoaded("iris");
-            if (irisAvailable && !hasLoggedIrisDetected) {
-                Nebula.LOGGER.info("[Nebula/Iris] ✓ Iris Shaders detected! MixinIrisPipeline will handle rendering.");
-                hasLoggedIrisDetected = true;
-            }
         }
         return irisAvailable;
     }
 
     /**
-     * 检查 Iris 光影是否真正激活（安装且光影包开启）
+     * 检查 Iris 是否正在渲染
      * 
-     * 返回 true 时，MixinIrisPipeline.beginTranslucents 会处理渲染
-     * 返回 false 时，renderTick() 事件会处理渲染
+     * @return 是否正在渲染
      */
     public static boolean isIrisRenderingActive() {
-        if (!isIrisInstalled()) {
+        if (!isIrisInstalled())
             return false;
-        }
-
-        // 通过反射调用 IrisApi.getInstance().isShaderPackInUse()
         try {
             Class<?> irisApiClass = Class.forName("net.irisshaders.iris.api.v0.IrisApi");
             Object instance = irisApiClass.getMethod("getInstance").invoke(null);
-            Object isActive = irisApiClass.getMethod("isShaderPackInUse").invoke(instance);
-
-            boolean shaderActive = Boolean.TRUE.equals(isActive);
-
-            // 日志记录（只记录一次）
-            if (shaderActive && !hasLoggedShaderActive) {
-                Nebula.LOGGER.info("[Nebula/Iris] ✓ Shader pack active. MixinIrisPipeline will handle rendering.");
-                hasLoggedShaderActive = true;
-                hasLoggedShaderOff = false; // 重置，以便下次关闭时能记录
-            } else if (!shaderActive && !hasLoggedShaderOff) {
-                Nebula.LOGGER.info("[Nebula/Iris] Shader pack OFF. Using standard WorldRenderEvents.");
-                hasLoggedShaderOff = true;
-                hasLoggedShaderActive = false; // 重置
-            }
-
-            return shaderActive;
+            return Boolean.TRUE.equals(irisApiClass.getMethod("isShaderPackInUse").invoke(instance));
         } catch (Exception e) {
-            // 反射失败，假设光影未激活
             return false;
         }
     }
 
     /**
-     * 重置缓存状态（用于热重载场景）
-     */
-    public static void resetCache() {
-        irisAvailable = null;
-        hasLoggedIrisDetected = false;
-        hasLoggedShaderActive = false;
-        hasLoggedShaderOff = false;
-        Nebula.LOGGER.debug("[Nebula/Iris] Cache reset.");
-    }
-
-    /**
-     * 尝试使用反射绑定 Iris 的半透明阶段 Framebuffer
-     * 避免直接使用 bindAndShareDepth 导致的深度/缓冲区冲突问题
+     * 核心修复方法：绑定 Iris 的半透明 Framebuffer
+     * 支持 ExtendedShader, FallbackShader 以及通过 Pipeline 直接获取
+     * 增强了健壮性，防止 RenderSystem.getShader() 为空时失效
      */
     public static void bindIrisTranslucentFramebuffer() {
         if (!isIrisRenderingActive())
             return;
 
         try {
-            // 1. 获取 Iris 主类与 PipelineManager
-            Class<?> irisClass = Class.forName("net.irisshaders.iris.Iris");
-            Object pipelineManager = irisClass.getMethod("getPipelineManager").invoke(null);
-            if (pipelineManager == null)
-                return;
-
-            // 2. 获取当前 Pipeline
-            Object pipeline = pipelineManager.getClass().getMethod("getPipeline").invoke(pipelineManager);
-            if (pipeline == null)
-                return;
-
-            // 3. 尝试获取 writingToAfterTranslucent 字段
-            // 注意：该字段可能位于 Pipeline 中，或者 Pipeline 是个 wrapper 包含 Program
-            // 根据用户提示，我们在对象中查找该字段
-            java.lang.reflect.Field field;
+            // 策略 1: 尝试从当前 RenderSystem 获取激活的 Shader (用户提供的方案)
+            // 适用于标准渲染流程中已激活 Shader 的情况
+            Object targetObject = null;
             try {
-                field = pipeline.getClass().getDeclaredField("writingToAfterTranslucent");
-            } catch (NoSuchFieldException e) {
-                // 如果直接在 pipeline 里找不到，尝试获取 program (如果有 getProgram 方法)
-                // 这里做一个假设性的尝试，但这取决于具体的 Iris 版本
+                targetObject = RenderSystem.getShader();
+            } catch (Throwable ignored) {
+            }
+
+            // 策略 2: 如果 RenderSystem 没有 Shader (例如在 Mixin 注入点或自定义渲染管线中)
+            // 直接从 Iris 获取当前管线 (更稳健的后备方案)
+            if (targetObject == null) {
                 try {
-                    Object program = pipeline.getClass().getMethod("getProgram").invoke(pipeline);
-                    field = program.getClass().getDeclaredField("writingToAfterTranslucent");
-                    pipeline = program; // 更新目标对象
-                } catch (Exception ex) {
-                    return; // 无法定位字段
+                    Class<?> irisClass = Class.forName("net.irisshaders.iris.Iris");
+                    Object pipelineManager = irisClass.getMethod("getPipelineManager").invoke(null);
+                    if (pipelineManager != null) {
+                        targetObject = pipelineManager.getClass().getMethod("getPipelineNullable")
+                                .invoke(pipelineManager);
+                    }
+                } catch (Throwable ignored) {
                 }
             }
 
-            if (field == null)
+            if (targetObject == null)
                 return;
 
-            field.setAccessible(true);
-            Object renderTarget = field.get(pipeline);
+            // 反射获取 writingToAfterTranslucent 字段
+            // 该字段可能存在于 ExtendedShader, FallbackShader 或 IrisRenderingPipeline 中
+            Field fboField = null;
+            Class<?> currentClass = targetObject.getClass();
 
-            // 4. 执行 bind() 并设置 DrawBuffer
-            if (renderTarget != null) {
-                renderTarget.getClass().getMethod("bind").invoke(renderTarget);
-                org.lwjgl.opengl.GL11.glDrawBuffer(org.lwjgl.opengl.GL30.GL_COLOR_ATTACHMENT0);
+            // 向上递归查找字段 (防止字段定义在父类)
+            while (currentClass != null) {
+                try {
+                    fboField = currentClass.getDeclaredField("writingToAfterTranslucent");
+                    break;
+                } catch (NoSuchFieldException e) {
+                    currentClass = currentClass.getSuperclass();
+                }
+            }
+
+            // 如果在当前对象找不到，且对象是 Pipeline，尝试获取其 Program 再找一次
+            if (fboField == null) {
+                try {
+                    Method getProgram = targetObject.getClass().getMethod("getProgram");
+                    Object program = getProgram.invoke(targetObject);
+                    if (program != null) {
+                        fboField = program.getClass().getDeclaredField("writingToAfterTranslucent");
+                        targetObject = program; // 更新目标对象为 Program
+
+                        // 不需要再次递归查找，通常 Program 是一级结构，或者我们可以简单递归下
+                        try {
+                            fboField = targetObject.getClass().getDeclaredField("writingToAfterTranslucent");
+                        } catch (NoSuchFieldException ignored) {
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+
+            if (fboField != null) {
+                fboField.setAccessible(true);
+                Object fbo = fboField.get(targetObject); // 获取 net.irisshaders.iris.gl.framebuffer.GlFramebuffer 对象
+
+                if (fbo != null) {
+                    // 3. 调用 GlFramebuffer.bind()
+                    Method bindMethod = fbo.getClass().getMethod("bind");
+                    bindMethod.setAccessible(true);
+                    bindMethod.invoke(fbo);
+
+                    // 4. 确保绘制到颜色附件 0 (Iris G-buffer 标准)
+                    // 使用 GL30 常量确保兼容性
+                    GL11.glDrawBuffer(GL30.GL_COLOR_ATTACHMENT0);
+                }
             }
 
         } catch (Exception e) {
-            Nebula.LOGGER.debug("[Nebula/Iris] Failed to bind internal framebuffer: {}", e.getMessage());
+            Nebula.LOGGER.error("[Nebula/Iris] Failed to bind translucent FBO: " + e.toString());
         }
     }
 }

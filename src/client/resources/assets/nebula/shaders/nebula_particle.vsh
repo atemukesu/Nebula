@@ -63,16 +63,8 @@ void main() {
     // 计算最终位置
     gl_Position = ProjMat * viewPos;
 
-    // 3. 安全的剔除逻辑
-    // 不要使用 return，而是直接覆盖 gl_Position
-    // 这样所有的 out 变量都已经赋值了，驱动程序不会报错
-    
-    // Opaque Pass (只画不透明)
-    if (uRenderPass == 0 && alpha < 0.99) {
-        gl_Position = vec4(2.0, 2.0, 2.0, 1.0); // 移出屏幕
-    }
-    // Translucent Pass (只画半透明)
-    if (uRenderPass == 1 && alpha >= 0.99) {
-        gl_Position = vec4(2.0, 2.0, 2.0, 1.0); // 移出屏幕
-    }
+    // 3. 移除激进的剔除逻辑
+    // 顶点着色器无法知道纹理的 Alpha 值，因此不能在这里剔除。
+    // 否则会导致“顶点不透明但纹理半透明”的粒子在 Translucent Pass 中被错误剔除。
+    // 将剔除工作完全交给 Fragment Shader 处理。
 }

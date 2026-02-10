@@ -22,9 +22,6 @@ layout(location = 2) out vec4 fragData2;      // 高光/发光数据 (仅 Iris)
 void main() {
     vec4 texColor;
 
-    if (baseColor.a < 0.05) {
-        discard; // 只要这个像素是透明的，不管粒子整体是不是不透明，都给我扔掉！
-    }
     
     if (UseTexture == 1) {
         // 从纹理数组采样
@@ -40,9 +37,27 @@ void main() {
         texColor = vec4(vec3(coreBrightness), alpha);
     }
     
-    // [借鉴点]：不要只依赖 EmissiveStrength，而是乘上逐粒子的 vBloomFactor
+    // 不要只依赖 EmissiveStrength，而是乘上逐粒子的 vBloomFactor
     // MadParticles 逻辑：vertexColor * sizeExtraLight.y
     vec4 baseColor = texColor * vColor;
+    
+    if (uRenderPass == 0) {
+        // Opaque Pass (不透明通道)：只绘制不透明像素
+        if (baseColor.a < 0.5) {
+            discard;
+        }
+    } else if (uRenderPass == 1) {
+        // Translucent Pass (OIT 通道)：只处理 Pass 1 没处理的半透明像素
+        // 丢弃完全不可见的像素，以及已经在 Pass 1 中绘制的不透明像素
+        if (baseColor.a < 0.001 || baseColor.a >= 0.5) {
+            discard;
+        }
+    } else {
+        // 传统模式 (uRenderPass == 2 或其他)：保留几乎所有像素
+        if (baseColor.a < 0.001) {
+            discard;
+        }
+    }
     
     // 允许 RGB 值超过 1.0 (HDR)
     // 这种 "过曝" 的颜色会被光影包捕捉并产生强烈的辉光
@@ -51,17 +66,23 @@ void main() {
     if (uRenderPass == 1) { // Translucent Pass (OIT)
         float alpha = clamp(baseColor.a, 0.0, 1.0);
         
-        // Weighted Blended OIT Weight Function
-        // weight = alpha * max(0.01, min(1.0, 3000.0 / (1e-5 + pow(abs(z) / 200.0, 4.0) + ...)))
-        // 简化版权重函数:
-        float weight = clamp(pow(min(1.0, alpha * 10.0) + 0.01, 3.0) * 1e8 * pow(1.0 - gl_FragCoord.z * 0.9, 3.0), 1e-2, 3e3) * min(2.0, gl_FragCoord.w);
+        // Weighted Blended OIT Weight Function (与 MadParticles 一致)
+        // 关键：在 OIT 积累中使用原始颜色，不使用 HDR 处理的颜色
+        // HDR 处理会在合成后由光影包处理
+        float weight = clamp(
+            pow(min(1.0, alpha * 5.0) + 0.01, 3.0)
+            * pow(1.0 - gl_FragCoord.z * 0.9, 3.0)
+            * min(2.0, gl_FragCoord.w)
+            * 1e6,
+            1e-2, 3e3
+        );
 
         // Accumulator (Location 0)
-        // Store: rgb * alpha * weight, alpha * weight
-        fragColor = vec4(hdrColor.rgb * alpha * weight, alpha * weight);
+        // 使用原始颜色进行积累，不使用 hdrColor
+        fragColor = vec4(baseColor.rgb * alpha * weight, alpha * weight);
         
         // Revealage (Location 1)
-        // Store: alpha (Blend mode will enable ONE_MINUS_SRC_COLOR to achieve product(1-a))
+        // 输出 alpha，混合模式 (ZERO, ONE_MINUS_SRC_COLOR) 会产生 product(1-alpha)
         fragData1 = vec4(alpha);
         
         // fragData2 unused in OIT pass

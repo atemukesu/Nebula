@@ -17,6 +17,7 @@ import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 import net.minecraft.util.math.Vec3d;
+import com.atemukesu.nebula.server.ServerAnimationSyncer;
 
 import java.util.concurrent.CompletableFuture;
 
@@ -48,6 +49,13 @@ public class NebulaCommand {
                                 .then(literal("reload")
                                                 .executes(context -> {
                                                         AnimationLoader.discoverAnimations();
+                                                        ServerAnimationSyncer.reload(); // Reload server hashes
+                                                        ServerAnimationSyncer
+                                                                        .sendToAll(context.getSource().getServer()); // Sync
+                                                                                                                     // to
+                                                                                                                     // all
+                                                                                                                     // players
+
                                                         // 向所有客户端发送重载包
                                                         for (ServerPlayerEntity player : context.getSource().getServer()
                                                                         .getPlayerManager()
@@ -64,6 +72,30 @@ public class NebulaCommand {
                                                                         true);
                                                         return 1;
                                                 }))
+
+                                .then(literal("get_hash")
+                                                .then(argument("animation", StringArgumentType.word())
+                                                                .suggests(NebulaCommand::getAnimationSuggestions)
+                                                                .executes(context -> {
+                                                                        String name = StringArgumentType.getString(
+                                                                                        context, "animation");
+                                                                        String hash = ServerAnimationSyncer.getHashes()
+                                                                                        .get(name);
+                                                                        if (hash != null) {
+                                                                                context.getSource().sendFeedback(
+                                                                                                () -> Text.literal(
+                                                                                                                "Animation: " + name
+                                                                                                                                + "\nHash: "
+                                                                                                                                + hash)
+                                                                                                                .formatted(Formatting.GREEN),
+                                                                                                false);
+                                                                        } else {
+                                                                                context.getSource().sendError(Text
+                                                                                                .literal("Animation not found or not hashed: "
+                                                                                                                + name));
+                                                                        }
+                                                                        return 1;
+                                                                })))
 
                                 .then(literal("clear")
                                                 .executes(context -> {
@@ -82,11 +114,6 @@ public class NebulaCommand {
                                                                         true);
                                                         return 1;
                                                 })));
-
-                // 同时注册别名 movparticles 保持兼容性
-                dispatcher.register(literal("movparticles")
-                                .requires(source -> source.hasPermissionLevel(2))
-                                .redirect(dispatcher.getRoot().getChild("nebula")));
         }
 
         private static int executePlay(ServerCommandSource source, String animationName, Vec3d position) {

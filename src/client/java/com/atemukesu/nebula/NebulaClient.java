@@ -92,6 +92,30 @@ public class NebulaClient implements ClientModInitializer {
                                 });
                     });
                 });
+
+        ClientPlayNetworking.registerGlobalReceiver(ModPackets.SYNC_DATA,
+                (client, handler, buf, responseSender) -> {
+                    // Thoroughly stop hash comparison in singleplayer
+                    if (client.isInSingleplayer()) {
+                        return;
+                    }
+                    int count = buf.readInt();
+                    java.util.Map<String, String> hashes = new java.util.HashMap<>();
+                    for (int i = 0; i < count; i++) {
+                        String name = buf.readString();
+                        String hash = buf.readString();
+                        hashes.put(name, hash);
+                    }
+                    client.execute(() -> {
+                        if (client.currentScreen instanceof com.atemukesu.nebula.client.gui.screen.NblSyncScreen) {
+                            ((com.atemukesu.nebula.client.gui.screen.NblSyncScreen) client.currentScreen)
+                                    .setServerHashes(hashes);
+                        } else {
+                            pendingSyncHashes = hashes;
+                        }
+                    });
+                });
+
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
             if (ModConfig.getInstance().getBlendMode() == BlendMode.OIT) {
                 int w = client.getWindow().getFramebufferWidth();
@@ -99,6 +123,26 @@ public class NebulaClient implements ClientModInitializer {
                 GpuParticleRenderer.preloadOIT(w, h);
                 Nebula.LOGGER.info("OIT preloaded on world join.");
             }
+            // Open Sync Screen if not singleplayer
+            if (!client.isInSingleplayer()) {
+                client.execute(() -> {
+                    com.atemukesu.nebula.client.gui.screen.NblSyncScreen screen = new com.atemukesu.nebula.client.gui.screen.NblSyncScreen(
+                            net.minecraft.text.Text.translatable("nebula.sync.title"));
+                    if (pendingSyncHashes != null) {
+                        screen.setServerHashes(pendingSyncHashes);
+                        pendingSyncHashes = null;
+                    }
+                    client.setScreen(screen);
+                });
+            } else {
+                Nebula.LOGGER.info("Singleplayer server detected, skipping animation sync.");
+            }
+        });
+
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
+            pendingSyncHashes = null;
         });
     }
+
+    private static java.util.Map<String, String> pendingSyncHashes = null;
 }

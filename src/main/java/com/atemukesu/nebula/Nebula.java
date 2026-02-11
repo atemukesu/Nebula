@@ -44,6 +44,15 @@ public class Nebula implements ModInitializer {
 		// 注册网络包
 		ModPackets.registerC2SPackets();
 
+		// 注册服务端事件
+		net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.SERVER_STARTING.register(server -> {
+			com.atemukesu.nebula.server.ServerAnimationSyncer.reload();
+		});
+
+		net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
+			com.atemukesu.nebula.server.ServerAnimationSyncer.sendToPlayer(handler.getPlayer());
+		});
+
 		LOGGER.info("Nebula initialized. Animation directory: .minecraft/nebula/animations/");
 	}
 

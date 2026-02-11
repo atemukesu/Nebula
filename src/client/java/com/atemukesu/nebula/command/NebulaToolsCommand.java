@@ -62,6 +62,34 @@ public class NebulaToolsCommand {
                                                         }
                                                     });
                                     return 1;
-                                })));
+                                }))
+                        .then(ClientCommandManager.literal("get_hash")
+                                .then(ClientCommandManager
+                                        .argument("animation",
+                                                com.mojang.brigadier.arguments.StringArgumentType.string())
+                                        .executes(context -> {
+                                            String name = com.mojang.brigadier.arguments.StringArgumentType.getString(
+                                                    context,
+                                                    "animation");
+                                            java.nio.file.Path path = com.atemukesu.nebula.particle.loader.AnimationLoader
+                                                    .getAnimationPath(name);
+                                            if (path != null && path.toFile().exists()) {
+                                                try {
+                                                    String hash = com.atemukesu.nebula.util.NebulaHashUtils
+                                                            .getSecureSampleHash(path);
+                                                    context.getSource()
+                                                            .sendFeedback(Text
+                                                                    .literal("Animation: " + name + "\nHash: " + hash)
+                                                                    .formatted(Formatting.GREEN));
+                                                } catch (java.io.IOException e) {
+                                                    context.getSource().sendError(
+                                                            Text.literal("Error hashing animation: " + e.getMessage()));
+                                                }
+                                            } else {
+                                                context.getSource()
+                                                        .sendError(Text.literal("Animation not found: " + name));
+                                            }
+                                            return 1;
+                                        }))));
     }
 }

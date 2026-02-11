@@ -229,6 +229,10 @@ class NBLWriter:
         self.bbox_max = np.array([float('-inf')] * 3, dtype=np.float32)
         self.keyframes = [] # 记录关键帧的序号
         self.file = None
+        self.cctx = None
+        if HAS_ZSTD:
+            import zstandard as zstd
+            self.cctx = zstd.ZstdCompressor(level=1)
 
     def __enter__(self):
         self.file = open(self.filepath, 'wb')
@@ -273,7 +277,6 @@ class NBLWriter:
         f.write(b'\x00' * (4 * self.total_frames))
 
     def write_frame(self, pos, col, size, tex_id, pid):
-        import zstandard as zstd
         num = len(pos)
         
         # Build Payload
@@ -288,17 +291,17 @@ class NBLWriter:
         
         # Compress
         header = struct.pack('<BI', 0, num)
-        cctx = zstd.ZstdCompressor(level=1) # Level 1 is fastest
-        chunk = cctx.compress(header + payload)
+        if self.cctx:
+            chunk = self.cctx.compress(header + payload)
+        else:
+            chunk = header + payload # Should not happen if HAS_ZSTD checked
         
         # Write
         offset = self.file.tell()
         self.file.write(chunk)
         self.frames_index.append((offset, len(chunk)))
         
-        # 记录关键帧 (当前版本所有非空帧默认都是 I-Frame，即 Type 0)
-        # 这里虽然我们硬编码了 0，但在逻辑上记录一下
-        # 注意：这里需要传入当前是第几帧，或者依赖 self.frames_index 的长度
+        # 记录关键帧
         self.keyframes.append(len(self.frames_index) - 1)
         
         # BBox
@@ -470,6 +473,14 @@ class NEBULA_OT_ExportFast(Operator):
                 success = tracker.precompute_distribution(mesh, self.props.sampling_density)
                 if success:
                     tracker.bake_colors(mesh.materials, self.image_cache, lambda msg: self.report({'INFO'}, msg))
+                    
+                    # 预计算材质 ID 映射 (极速核心)
+                    tracker.static_tex_ids = np.zeros(len(tracker.tri_indices), dtype=np.uint8)
+                    for i, mat in enumerate(obj.data.materials):
+                        if mat and mat.name in self.mat_to_tex_id:
+                            target_id = self.mat_to_tex_id[mat.name]
+                            tracker.static_tex_ids[tracker.mat_indices == i] = target_id
+                            
                     self.trackers[obj.name] = tracker
                 
                 eval_obj.to_mesh_clear()
@@ -492,69 +503,48 @@ class NEBULA_OT_ExportFast(Operator):
                 # 否则 evaluated_get 拿到的可能是旧数据
                 self.depsgraph.update() 
                 
-                # --- 新增：强制刷新 UI，防止未响应 ---
+                # --- 新增：强制刷新 UI 并在控制台打印进度 ---
                 bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
-                # ----------------------------------- 
-                
+                progress = (frame - start) / (end - start) if end > start else 1.0
+                print(f"导出进度: [{frame}/{end}] ({progress*100:.1f}%) | 粒子数: {current_frame_particles:<7}", end='\r')
+                # ------------------------------------------
+
                 frame_pos = []
                 frame_col = []
                 frame_size = []
                 frame_tex = []
                 frame_pid = []
+                current_frame_particles = 0
                 
                 for obj_name, tracker in self.trackers.items():
                     obj = bpy.data.objects.get(obj_name)
                     if not obj: continue
                     
                     eval_obj = obj.evaluated_get(self.depsgraph)
-                    mesh = eval_obj.to_mesh() # 这里依然需要 to_mesh 获取当前帧顶点
+                    mesh = eval_obj.to_mesh() 
                     
-                    # 极速计算位置
                     local_pos = tracker.compute_positions(mesh)
                     if local_pos is not None:
-                        # World Transform
-                        mat_world = eval_obj.matrix_world
-                        # 批量矩阵变换 (N, 3) @ (3, 3) + (3,)
-                        # numpy broadcasting
-                        rot = np.array(mat_world.to_3x3()).T # Transpose for multiplication
-                        loc = np.array(mat_world.translation)
+                        count = len(local_pos)
+                        current_frame_particles += count
                         
+                        # Transform
+                        mat_world = eval_obj.matrix_world
+                        rot = np.array(mat_world.to_3x3()).T 
+                        loc = np.array(mat_world.translation)
                         world_pos = local_pos @ rot + loc
                         
-                        # MC Space
+                        # MC Space (YZ Flip + Scale)
                         mc_pos = np.empty_like(world_pos)
                         mc_pos[:, 0] = world_pos[:, 0] * self.props.scale
                         mc_pos[:, 1] = world_pos[:, 2] * self.props.scale
                         mc_pos[:, 2] = world_pos[:, 1] * self.props.scale
                         
-                        # 组装数据
-                        count = len(mc_pos)
-                        
-                        # 材质 ID 转换
-                        t_ids = np.zeros(count, dtype=np.uint8)
-                        for m_idx, tex_idx in self.mat_to_tex_id.items():
-                            # 这种反向查找有点慢，优化一下：
-                            # 应该在 tracker 里直接存 tex_id 而不是 material_index
-                            # 但为了简单先这样，numpy mask 很快
-                            mat_obj = bpy.data.materials.get(m_idx)
-                            if mat_obj:
-                                # 找到 tracker.mat_indices 中等于 this 材质索引的位置
-                                pass
-                        
-                        # 简单的一步到位 TexID 生成：
-                        # 在 tracker 初始化时其实可以把 material_index 映射成 NBL Tex ID
-                        # 现场计算：
-                        mapped_tex_ids = np.zeros(count, dtype=np.uint8)
-                        for i, m_idx in enumerate(mesh.materials):
-                             if m_idx and m_idx.name in self.mat_to_tex_id:
-                                 target_id = self.mat_to_tex_id[m_idx.name]
-                                 mapped_tex_ids[tracker.mat_indices == i] = target_id
-                                 
                         frame_pos.append(mc_pos)
                         frame_col.append(tracker.static_colors)
                         frame_size.append(np.full(count, int(self.props.particle_size * 100), dtype=np.uint16))
-                        frame_tex.append(mapped_tex_ids)
-                        frame_pid.append(np.arange(count, dtype=np.int32)) # 简单的 ID
+                        frame_tex.append(tracker.static_tex_ids)
+                        frame_pid.append(np.arange(count, dtype=np.int32)) 
                     
                     eval_obj.to_mesh_clear()
                 
@@ -567,11 +557,11 @@ class NEBULA_OT_ExportFast(Operator):
                         np.concatenate(frame_pid)
                     )
                 else:
-                    # Empty frame
                     writer.write_frame(np.array([]), np.array([]), np.array([]), np.array([]), np.array([]))
                 
                 context.window_manager.progress_update(frame - start + 1)
-                
+        
+        print("\n导出完成！")
         context.window_manager.progress_end()
         self.report({'INFO'}, f"极速导出完成！")
 

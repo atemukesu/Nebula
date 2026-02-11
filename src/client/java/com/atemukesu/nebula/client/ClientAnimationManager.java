@@ -130,6 +130,11 @@ public class ClientAnimationManager {
             return;
         }
 
+        // 没有粒子，跳过
+        if (this.getInstanceCount() == 0) {
+            return;
+        }
+
         // 获取相机信息
         Camera camera = client.gameRenderer.getCamera();
         Vec3d cameraPos = camera.getPos();
@@ -339,6 +344,11 @@ public class ClientAnimationManager {
             return;
         }
 
+        // 没有粒子，跳过
+        if (this.getInstanceCount() == 0) {
+            return;
+        }
+
         // 记录日志（只记录一次）
         if (bindFramebuffer && !hasLoggedStandardRenderPath) {
             Nebula.LOGGER.info("[Nebula/Render] ✓ Rendering via Mixin (standard mode).");
@@ -530,6 +540,11 @@ public class ClientAnimationManager {
 
         // [Config Control] 如果不在 Replay 渲染模式且配置关闭了游戏内渲染，则跳过
         if (!CurrentTimeUtil.isRendering() && !config.shouldRenderInGame()) {
+            return;
+        }
+
+        // 没有粒子，跳过
+        if (this.getInstanceCount() == 0) {
             return;
         }
 

@@ -154,18 +154,30 @@ public class DebugHud {
     private static void drawPerformanceCharts(DrawContext context, TextRenderer textRenderer, int x, int startY) {
         int currentY = startY;
 
-        drawChart(context, textRenderer, x, currentY, "Particles", particlesCache, 0xFF5555FF);
+        drawChart(context, textRenderer, x, currentY, "Particles", particlesCache, 0xFF5555FF, true);
         drawChart(context, textRenderer, x + CHART_WIDTH + PADDING, currentY, "Render Time", renderTimeCache,
-                0xFFFF5555);
+                0xFFFF5555, false);
 
         currentY += CHART_HEIGHT + PADDING;
 
-        drawChart(context, textRenderer, x, currentY, "Buffer (MB)", bufferCache, 0xFF55FF55);
-        drawChart(context, textRenderer, x + CHART_WIDTH + PADDING, currentY, "FPS", fpsCache, 0xFFFFAA00);
+        drawChart(context, textRenderer, x, currentY, "Buffer (MB)", bufferCache, 0xFF55FF55, false);
+        drawChart(context, textRenderer, x + CHART_WIDTH + PADDING, currentY, "FPS", fpsCache, 0xFFFFAA00, false);
     }
 
+    /**
+     * 绘制图表
+     * 
+     * @param context      绘图上下文
+     * @param textRenderer 文本渲染器
+     * @param x            X 坐标
+     * @param y            Y 坐标
+     * @param label        标题
+     * @param cache        缓存
+     * @param colorARGB    颜色
+     * @param isInteger    是否为整数
+     */
     private static void drawChart(DrawContext context, TextRenderer textRenderer, int x, int y, String label,
-            ChartCache cache, int colorARGB) {
+            ChartCache cache, int colorARGB, boolean isInteger) {
         // 背景
         context.fill(x, y, x + CHART_WIDTH, y + CHART_HEIGHT, BG_COLOR);
 
@@ -176,7 +188,12 @@ public class DebugHud {
             return;
 
         // 当前值文本 (使用缓存的 lastValue)
-        String valStr = String.format("%.1f", cache.lastValue);
+        String valStr;
+        if (isInteger) {
+            valStr = String.format("%.0f", cache.lastValue);
+        } else {
+            valStr = String.format("%.1f", cache.lastValue);
+        }
         context.drawTextWithShadow(textRenderer, valStr, x + CHART_WIDTH - textRenderer.getWidth(valStr) - 2, y + 2,
                 colorARGB);
 

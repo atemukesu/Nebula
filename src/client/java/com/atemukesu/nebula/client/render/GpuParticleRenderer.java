@@ -754,6 +754,8 @@ public class GpuParticleRenderer {
      * PMB 模式数据上传
      */
     private static int uploadDataPMB(ByteBuffer data, int dataSize) {
+        PerformanceStats stats = PerformanceStats.getInstance();
+        stats.beginDataUpload();
         int bufferIndex = currentBufferIndex;
 
         // 等待 GPU 完成对这个缓冲区的使用
@@ -776,7 +778,7 @@ public class GpuParticleRenderer {
         long destAddress = MemoryUtil.memAddress(mappedBuffer);
         long srcAddress = MemoryUtil.memAddress(data);
         MemoryUtil.memCopy(srcAddress, destAddress, dataSize);
-
+        stats.endDataUpload(); // 计时
         return ssbos[bufferIndex];
     }
 
@@ -784,6 +786,8 @@ public class GpuParticleRenderer {
      * 降级模式数据上传（传统 glBufferSubData）
      */
     private static int uploadDataFallback(ByteBuffer data, int dataSize) {
+        PerformanceStats stats = PerformanceStats.getInstance();
+        stats.beginDataUpload(); // 统计数据
         GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, ssbos[0]);
 
         // Orphan the buffer (废弃旧数据，避免同步等待)
@@ -792,7 +796,7 @@ public class GpuParticleRenderer {
         // 写入数据
         GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, data);
         GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
-
+        stats.endDataUpload(); // 计时
         return ssbos[0];
     }
 
@@ -978,6 +982,23 @@ public class GpuParticleRenderer {
 
     public static int getTypeSize() {
         return lastFrameUsedBytes;
+    }
+
+    /**
+     * 预分配 OIT 资源
+     * 
+     * @param width  视口宽度
+     * @param height 视口高度
+     */
+    public static void preloadOIT(int width, int height) {
+        if (!initialized || oitFbo == null)
+            return;
+        Nebula.LOGGER.info("[GpuParticleRenderer] Pre-allocating OIT resources for size {}x{}", width, height);
+        oitFbo.resize(width, height);
+        // 预清空一下，防止脏数据
+        oitFbo.bindAndShareDepth(0);
+        oitFbo.clear();
+        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
     }
 
     /**

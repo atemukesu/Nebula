@@ -3,13 +3,17 @@ package com.atemukesu.nebula;
 import com.atemukesu.nebula.command.NebulaToolsCommand;
 import com.atemukesu.nebula.client.ClientAnimationManager;
 import com.atemukesu.nebula.client.DebugHud;
+import com.atemukesu.nebula.client.enums.BlendMode;
 import com.atemukesu.nebula.client.loader.ClientAnimationLoader;
+import com.atemukesu.nebula.client.render.GpuParticleRenderer;
 import com.atemukesu.nebula.config.ConfigManager;
+import com.atemukesu.nebula.config.ModConfig;
 import com.atemukesu.nebula.networking.ModPackets;
 import net.fabricmc.api.ClientModInitializer;
 
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 
@@ -88,5 +92,13 @@ public class NebulaClient implements ClientModInitializer {
                                 });
                     });
                 });
+        ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
+            if (ModConfig.getInstance().getBlendMode() == BlendMode.OIT) {
+                int w = client.getWindow().getFramebufferWidth();
+                int h = client.getWindow().getFramebufferHeight();
+                GpuParticleRenderer.preloadOIT(w, h);
+                Nebula.LOGGER.info("OIT preloaded on world join.");
+            }
+        });
     }
 }

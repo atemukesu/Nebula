@@ -2,6 +2,9 @@ package com.atemukesu.nebula.config;
 
 import com.atemukesu.nebula.client.enums.BlendMode;
 import com.atemukesu.nebula.client.enums.CullingBehavior;
+import com.atemukesu.nebula.client.render.GpuParticleRenderer;
+
+import net.minecraft.client.MinecraftClient;
 
 public class ModConfig {
     private static ModConfig INSTANCE;
@@ -87,6 +90,15 @@ public class ModConfig {
      */
     public void setBlendMode(BlendMode blendMode) {
         this.blendMode = blendMode;
+        // 预加载 OIT
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (this.blendMode == BlendMode.OIT && client.getWindow() != null) {
+            int w = client.getWindow().getFramebufferWidth();
+            int h = client.getWindow().getFramebufferHeight();
+            if (w > 0 && h > 0) {
+                GpuParticleRenderer.preloadOIT(w, h);
+            }
+        }
     }
 
     /**

@@ -36,6 +36,7 @@ public class PerformanceStats {
     // ========== 帧时间统计 ==========
     private long lastFrameTimeNs = 0;
     private long frameStartTimeNs = 0;
+    private long uploadStartTimeNs = 0;
     private double renderTimeMs = 0;
     private double uploadTimeMs = 0;
     private double drawCallTimeMs = 0;
@@ -44,7 +45,6 @@ public class PerformanceStats {
     // ========== 历史数据（懒加载） ==========
     private LinkedList<Integer> particleCountHistory;
     private LinkedList<Double> renderTimeHistory;
-    private LinkedList<Double> uploadTimeHistory;
     private LinkedList<Integer> usedBufferHistory;
     private LinkedList<Double> fpsHistory;
 
@@ -84,14 +84,12 @@ public class PerformanceStats {
 
         particleCountHistory = new LinkedList<>();
         renderTimeHistory = new LinkedList<>();
-        uploadTimeHistory = new LinkedList<>();
         usedBufferHistory = new LinkedList<>();
         fpsHistory = new LinkedList<>();
 
         for (int i = 0; i < HISTORY_SIZE; i++) {
             particleCountHistory.add(0);
             renderTimeHistory.add(0.0);
-            uploadTimeHistory.add(0.0);
             usedBufferHistory.add(0);
             fpsHistory.add(0.0);
         }
@@ -100,13 +98,15 @@ public class PerformanceStats {
 
     // ========== 帧生命周期 ==========
 
-    // ========== 帧生命周期 ==========
-
     public void beginFrame() {
         if (!enabled) {
             return;
         }
         frameStartTimeNs = System.nanoTime();
+
+        // 重置数据
+        uploadTimeMs = 0;
+        renderTimeMs = 0;
     }
 
     public void endFrame() {
@@ -116,6 +116,19 @@ public class PerformanceStats {
 
         lastFrameTimeNs = System.nanoTime() - frameStartTimeNs;
         renderTimeMs = lastFrameTimeNs / 1_000_000.0;
+    }
+
+    public void beginDataUpload() {
+        if (!enabled)
+            return;
+        uploadStartTimeNs = System.nanoTime();
+    }
+
+    public void endDataUpload() {
+        if (!enabled)
+            return;
+        long duration = System.nanoTime() - uploadStartTimeNs;
+        uploadTimeMs += (duration / 1_000_000.0);
     }
 
     /**
@@ -143,13 +156,8 @@ public class PerformanceStats {
         // 更新历史数据
         addToHistory(particleCountHistory, particleCount);
         addToHistory(renderTimeHistory, renderTimeMs);
-        addToHistory(uploadTimeHistory, uploadTimeMs);
         addToHistory(usedBufferHistory, usedBufferBytes);
         addToHistory(fpsHistory, currentFps);
-
-        // 重要：重置每帧计算的数据，确保如果下一帧没有渲染粒子（不调用 beginFrame），数据显示为 0
-        renderTimeMs = 0;
-        uploadTimeMs = 0;
     }
 
     private <T> void addToHistory(LinkedList<T> list, T value) {
@@ -350,10 +358,6 @@ public class PerformanceStats {
 
     public LinkedList<Double> getRenderTimeHistory() {
         return renderTimeHistory;
-    }
-
-    public LinkedList<Double> getUploadTimeHistory() {
-        return uploadTimeHistory;
     }
 
     public LinkedList<Integer> getUsedBufferHistory() {

@@ -14,6 +14,7 @@ import net.minecraft.util.Formatting;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -31,6 +32,7 @@ public class NblSyncScreen extends Screen {
     private final AtomicInteger processedFiles = new AtomicInteger(0);
     private final AtomicInteger successCount = new AtomicInteger(0);
     private final AtomicInteger failureCount = new AtomicInteger(0);
+    private final List<LogData> logHistory = Collections.synchronizedList(new ArrayList<>());
 
     private LogListWidget logListWidget;
     private boolean showOnlyErrors = false;
@@ -60,6 +62,7 @@ public class NblSyncScreen extends Screen {
         int logTop = 110;
         int logBottom = this.height - 60;
         this.logListWidget = new LogListWidget(this.client, this.width - 40, logBottom - logTop, logTop, logBottom, 12);
+        updateLogUI(); // 恢复日志
         this.addSelectableChild(this.logListWidget);
 
         // 底部按钮栏
@@ -170,12 +173,31 @@ public class NblSyncScreen extends Screen {
     }
 
     private void addLog(Text text, LogLevel level) {
+        logHistory.add(new LogData(text, level));
         if (this.client != null) {
-            this.client.execute(() -> {
-                if (this.logListWidget != null) {
-                    this.logListWidget.addEntry(text, level);
+            this.client.execute(this::updateLogUI);
+        }
+    }
+
+    private void updateLogUI() {
+        if (this.logListWidget != null) {
+            int currentSize = this.logListWidget.getAllEntryCount();
+            int targetSize = logHistory.size();
+
+            // 只需要添加新增的日志
+            if (targetSize > currentSize) {
+                // 使用 synchronized 块来防止在遍历时 logHistory 被修改
+                synchronized (logHistory) {
+                    // 再次检查大小，防止并发修改
+                    targetSize = logHistory.size();
+                    for (int i = currentSize; i < targetSize; i++) {
+                        LogData data = logHistory.get(i);
+                        this.logListWidget.addEntry(data.text, data.level);
+                    }
                 }
-            });
+                // 确保过滤器状态保持一致
+                this.logListWidget.updateFilter(showOnlyErrors);
+            }
         }
     }
 
@@ -279,6 +301,17 @@ public class NblSyncScreen extends Screen {
         return false;
     }
 
+    // 日志数据类
+    private static class LogData {
+        final Text text;
+        final LogLevel level;
+
+        LogData(Text text, LogLevel level) {
+            this.text = text;
+            this.level = level;
+        }
+    }
+
     // 日志级别枚举
     private enum LogLevel {
         SUCCESS("✓", 0x00FF00),
@@ -306,6 +339,10 @@ public class NblSyncScreen extends Screen {
     private static class LogListWidget extends AlwaysSelectedEntryListWidget<LogListWidget.LogEntry> {
         private final List<LogEntry> allEntries = new ArrayList<>();
         private boolean filterErrors = false;
+
+        public int getAllEntryCount() {
+            return allEntries.size();
+        }
 
         public LogListWidget(MinecraftClient client, int width, int height, int top, int bottom, int itemHeight) {
             super(client, width, height, top, bottom, itemHeight);

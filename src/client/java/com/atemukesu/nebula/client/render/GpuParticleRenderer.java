@@ -284,6 +284,15 @@ public class GpuParticleRenderer {
 
         // Backup Viewport
         GL11.glGetIntegerv(GL11.GL_VIEWPORT, oitCachedViewport);
+        oitFbo.bindAndShareDepth(targetFboId);
+        oitFbo.clear(); // 强制清空：Accum=0, Reveal=1 (背景可见)
+        globalOitCleared = true; // 标记已清空，防止 renderOITBatch 重复清空(虽然重复清空也没事)
+        // 切回目标 FBO，准备给 Pass 1 (不透明粒子) 使用
+        if (targetFboId == MinecraftClient.getInstance().getFramebuffer().fbo) {
+            MinecraftClient.getInstance().getFramebuffer().beginWrite(false);
+        } else {
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, targetFboId);
+        }
     }
 
     /**

@@ -28,8 +28,8 @@ public class ModConfig {
         this.showDebugHud = false;
         this.showPerformanceStats = true;
         this.showCharts = true;
-        // 默认使用加法混合
-        this.blendMode = BlendMode.ADDITIVE;
+        // 默认使用普通混合
+        this.blendMode = BlendMode.ALPHA;
         // 默认使用用户自定义的亮度
         this.emissiveStrength = 2.0f;
         this.cullingBehavior = CullingBehavior.SIMULATE_ONLY;

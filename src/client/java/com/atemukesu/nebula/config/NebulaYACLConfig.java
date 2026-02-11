@@ -67,7 +67,7 @@ public class NebulaYACLConfig {
                                                                 .description(OptionDescription.of(Text.translatable(
                                                                                 "gui.nebula.config.blend_mode.desc")))
                                                                 .binding(
-                                                                                BlendMode.ADDITIVE,
+                                                                                BlendMode.ALPHA,
                                                                                 config::getBlendMode,
                                                                                 config::setBlendMode)
                                                                 .controller(opt -> EnumControllerBuilder.create(opt)

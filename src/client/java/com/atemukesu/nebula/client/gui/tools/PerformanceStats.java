@@ -255,7 +255,6 @@ public class PerformanceStats {
     }
 
     private float emissiveStrength = 1.0f;
-    private boolean renderInGame = true;
 
     public void setEmissiveStrength(float strength) {
         this.emissiveStrength = strength;
@@ -263,14 +262,6 @@ public class PerformanceStats {
 
     public float getEmissiveStrength() {
         return emissiveStrength;
-    }
-
-    public void setRenderInGame(boolean render) {
-        this.renderInGame = render;
-    }
-
-    public boolean isRenderInGame() {
-        return renderInGame;
     }
 
     // ========== Getters ==========

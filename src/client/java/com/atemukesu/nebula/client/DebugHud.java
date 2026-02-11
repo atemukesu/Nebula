@@ -139,8 +139,8 @@ public class DebugHud {
                     stats.getTargetFboId() >= 0 ? 0xAAFFAA : 0xFFAAAA));
             cachedLines.add(new CachedLine(
                     String.format("Emissive: %.1f | Game Render: %b", stats.getEmissiveStrength(),
-                            stats.isRenderInGame()),
-                    stats.isRenderInGame() ? 0xAAFFAA : 0xFFAAAA));
+                            config.shouldRenderInGame()),
+                    config.shouldRenderInGame() ? 0xAAFFAA : 0xFFAAAA));
         }
 
         if (config.getShowCharts()) {

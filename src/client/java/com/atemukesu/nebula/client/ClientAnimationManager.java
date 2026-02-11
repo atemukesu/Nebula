@@ -308,7 +308,6 @@ public class ClientAnimationManager {
                     : 1.0f; // 和实际值保持一致
 
             stats.setEmissiveStrength(effectiveEmissive);
-            stats.setRenderInGame(config.shouldRenderInGame());
             stats.endFrame();
         }
     }
@@ -503,7 +502,6 @@ public class ClientAnimationManager {
                     : 1.0f;
 
             stats.setEmissiveStrength(effectiveEmissive);
-            stats.setRenderInGame(config.shouldRenderInGame());
             stats.endFrame();
         }
 
@@ -739,7 +737,6 @@ public class ClientAnimationManager {
                     : 1.0f;
 
             stats.setEmissiveStrength(effectiveEmissive);
-            stats.setRenderInGame(config.shouldRenderInGame());
             stats.endFrame();
         }
     }

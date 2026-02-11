@@ -1,6 +1,6 @@
 {
     "nebula.sync.title": "Nebula Synchronizer",
-    "nebula.sync.syncing": "Synchronizing animations with server....",
+    "nebula.sync.syncing": "Synchronizing animations with server...",
     "nebula.sync.log_title": "Sync Log:",
     "nebula.sync.copy_log": "Copy Log",
     "nebula.sync.show_all": "Show All",

@@ -1,6 +1,6 @@
 {
     "nebula.sync.title": "Nebula 同步器",
-    "nebula.sync.syncing": "正在和服务器同步动画....",
+    "nebula.sync.syncing": "正在和服务器同步动画...",
     "nebula.sync.log_title": "下方是同步日志：",
     "nebula.sync.copy_log": "复制日志",
     "nebula.sync.show_all": "显示所有",

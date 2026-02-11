@@ -143,6 +143,78 @@ class ParticleTracker:
         
         # 3. 矩阵乘法计算最终位置
         # Pos = p0*w0 + p1*w1 + p2*w2
+        final_pos = (p0 * self.bary_weights[:, 0:1] + 
+                     p1 * self.bary_weights[:, 1:2] + 
+                     p2 * self.bary_weights[:, 2:3])
+                     
+        return final_pos
+
+    def bake_colors(self, obj_materials, image_cache, report_fn=None):
+        """改进版：优先查找连接到 Base Color 的图片"""
+        if not self.initialized: return
+        
+        count = len(self.tri_indices)
+        self.static_colors = np.full((count, 4), 255, dtype=np.uint8)
+        
+        unique_mats = np.unique(self.mat_indices)
+        
+        for m_idx in unique_mats:
+            if m_idx >= len(obj_materials) or m_idx < 0: continue
+            mat = obj_materials[m_idx]
+            if not mat: continue
+             
+            target_img = None
+            found_method = "Default (White)"
+
+            if mat.use_nodes:
+                # 1. 尝试找到 Principled BSDF 节点
+                bsdf = next((n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
+                if bsdf and bsdf.inputs['Base Color'].is_linked:
+                    # 获取连接到 Base Color 的节点
+                    link_node = bsdf.inputs['Base Color'].links[0].from_node
+                    if link_node.type == 'TEX_IMAGE':
+                        target_img = link_node.image
+                        found_method = "Base Color"
+                
+                # 2. 如果没找到，回退到旧方法
+                if not target_img:
+                    nodes = mat.node_tree.nodes
+                    # 优先找 active 节点
+                    if nodes.active and nodes.active.type == 'TEX_IMAGE':
+                        target_img = nodes.active.image
+                        found_method = "Active Node"
+                    else:
+                        for node in nodes:
+                            if node.type == 'TEX_IMAGE' and node.image:
+                                target_img = node.image
+                                found_method = "First Image Node"
+                                break
+            
+            if report_fn:
+                img_name = target_img.name if target_img else "None"
+                report_fn(f"Mat: {mat.name} | {found_method} | {img_name}")
+
+            if not target_img or target_img.name not in image_cache: continue
+            
+            # 采样
+            pixels, w, h = image_cache[target_img.name]
+            mask = (self.mat_indices == m_idx)
+            sub_uvs = self.static_uvs[mask]
+            
+            u = sub_uvs[:, 0] % 1.0
+            v = sub_uvs[:, 1] % 1.0
+            
+            x = (u * w).astype(np.int32)
+            y = (v * h).astype(np.int32)
+            np.clip(x, 0, w-1, out=x)
+            np.clip(y, 0, h-1, out=y)
+            
+            # 注意：Blender 图片数据是平铺的
+            sampled = pixels[y, x]
+            self.static_colors[mask] = (sampled * 255).astype(np.uint8)
+
+# ==============================================================================
+# NBL Writer (轻微优化)
 # ==============================================================================
 class NBLWriter:
     # ... (保持之前的 NBLWriter 类不变，只负责写入二进制) ...

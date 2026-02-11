@@ -23,6 +23,7 @@ class NBLValidator:
 
     def validate(self, file_path):
         self.log_messages = []
+        self.metadata = {}
         self.log(f"开始检查文件: {os.path.basename(file_path)}")
         
         try:
@@ -32,22 +33,21 @@ class NBLValidator:
                 self.log(">> 正在检查文件头 (Header)...")
                 header_data = f.read(48)
                 if len(header_data) < 48:
-                    return False, "文件过小，无法读取文件头"
+                    return False, "文件过小，无法读取文件头", self.metadata
 
                 magic, version, target_fps, total_frames, tex_count, attrs, \
                 bbox_min_x, bbox_min_y, bbox_min_z, \
                 bbox_max_x, bbox_max_y, bbox_max_z, \
                 reserved = struct.unpack('<8sHHIHH3f3f4s', header_data)
 
-                if magic != b'NEBULAFX':
-                    return False, f"Magic Number 错误。期望: NEBULAFX, 实际: {magic}"
-                
-                if version != 1:
-                    return False, f"版本号不支持。期望: 1, 实际: {version}"
-                
-                # Check Reserved (Should be 0, but usually warn is enough, spec says forced 0)
-                if reserved != b'\x00\x00\x00\x00':
-                    self.log("[Warning] 保留位 (Reserved) 不为全 0。")
+                self.metadata['magic'] = magic.decode('ascii')
+                self.metadata['version'] = version
+                self.metadata['fps'] = target_fps
+                self.metadata['total_frames'] = total_frames
+                self.metadata['tex_count'] = tex_count
+                self.metadata['attributes'] = attrs
+                self.metadata['bbox_min'] = (bbox_min_x, bbox_min_y, bbox_min_z)
+                self.metadata['bbox_max'] = (bbox_max_x, bbox_max_y, bbox_max_z)
 
                 self.log(f"Header 信息: FPS={target_fps}, 总帧数={total_frames}, 贴图数={tex_count}")
 
@@ -57,35 +57,35 @@ class NBLValidator:
                     # Read path length (uint16)
                     len_bytes = f.read(2)
                     if len(len_bytes) < 2:
-                        return False, "纹理块读取意外中断 (EOF)"
+                        return False, "纹理块读取意外中断 (EOF)", self.metadata
                     path_len = struct.unpack('<H', len_bytes)[0]
                     
                     # Read path
                     path_bytes = f.read(path_len)
                     if len(path_bytes) < path_len:
-                        return False, f"纹理路径读取不完整 (Texture #{i})"
+                        return False, f"纹理路径读取不完整 (Texture #{i})", self.metadata
                     
                     try:
                         path_str = path_bytes.decode('utf-8')
                     except UnicodeDecodeError:
-                        return False, f"纹理路径不是有效的 UTF-8 编码 (Texture #{i})"
+                        return False, f"纹理路径不是有效的 UTF-8 编码 (Texture #{i})", self.metadata
 
-                    # Read rows/cols
-                    rc_bytes = f.read(2)
-                    if len(rc_bytes) < 2:
-                        return False, "纹理行列数读取中断"
+                    # 读取行数和列数 (Rows/Cols)
+                    f.read(2)
                     
+                    self.metadata.setdefault('textures', []).append(path_str)
+                
                 # --- 3. Frame Index Table Check ---
                 self.log(">> 正在检查帧索引表 (Frame Index Table)...")
                 frame_indices = []
                 for i in range(total_frames):
                     fi_data = f.read(12) # uint64 offset + uint32 size
                     if len(fi_data) < 12:
-                         return False, f"帧索引表在第 {i} 帧处中断"
+                         return False, f"帧索引表在第 {i} 帧处中断", self.metadata
                     chunk_offset, chunk_size = struct.unpack('<QI', fi_data)
                     
                     if chunk_offset + chunk_size > file_size:
-                        return False, f"帧 {i} 的数据块越界 (Offset {chunk_offset} + Size {chunk_size} > FileSize)"
+                        return False, f"帧 {i} 的数据块越界 (Offset {chunk_offset} + Size {chunk_size} > FileSize)", self.metadata
                     
                     frame_indices.append((chunk_offset, chunk_size))
 
@@ -93,19 +93,17 @@ class NBLValidator:
                 self.log(">> 正在检查关键帧索引表 (Keyframe Index Table)...")
                 kf_count_bytes = f.read(4)
                 if len(kf_count_bytes) < 4:
-                    return False, "关键帧计数读取中断"
+                    return False, "关键帧计数读取中断", self.metadata
                 kf_count = struct.unpack('<I', kf_count_bytes)[0]
                 
                 # Skip reading indices content, just check file availability
                 if kf_count > total_frames:
                      self.log(f"[Warning] 关键帧数量 ({kf_count}) 大于总帧数 ({total_frames})，这很奇怪。")
 
-                # Seek past the keyframe indices (4 bytes * kf_count)
+                self.metadata['kf_count'] = kf_count
                 seek_amount = 4 * kf_count
-                # Check if we can seek that far
-                current_pos = f.tell()
-                if current_pos + seek_amount > file_size:
-                    return False, "关键帧索引表数据越界"
+                if f.tell() + seek_amount > file_size:
+                    return False, "关键帧索引表数据越界", self.metadata
                 f.seek(seek_amount, 1) # relative seek
 
                 # --- 5. Frame Data Chunk Check (Deep Scan) ---
@@ -117,17 +115,17 @@ class NBLValidator:
                     compressed_data = f.read(size)
                     
                     if len(compressed_data) != size:
-                         return False, f"帧 {i} 数据读取不完整"
+                         return False, f"帧 {i} 数据读取不完整", self.metadata
 
                     try:
                         # 规范：每一帧独立压缩，全新上下文
                         decompressed = dctx.decompress(compressed_data)
                     except zstd.ZstdError as e:
-                        return False, f"帧 {i} Zstd 解压失败: {str(e)} (可能是数据损坏或非独立压缩)"
+                        return False, f"帧 {i} Zstd 解压失败: {str(e)} (可能是数据损坏或非独立压缩)", self.metadata
 
                     # Check Payload Structure
                     if len(decompressed) < 5:
-                        return False, f"帧 {i} 解压后数据过短 (Header缺失)"
+                        return False, f"帧 {i} 解压后数据过短 (Header缺失)", self.metadata
                     
                     frame_type = decompressed[0]
                     particle_count = struct.unpack('<I', decompressed[1:5])[0]
@@ -148,19 +146,19 @@ class NBLValidator:
                         # 6N + 4N + 2N + 1N + 1N + 4N = 18N
                         expected_payload_size = particle_count * 18
                     else:
-                        return False, f"帧 {i} 未知的 FrameType: {frame_type}"
+                        return False, f"帧 {i} 未知的 FrameType: {frame_type}", self.metadata
 
                     actual_payload_size = len(decompressed) - header_size
                     if actual_payload_size != expected_payload_size:
                         return False, (f"帧 {i} 数据长度校验失败 (Type {frame_type}, N={particle_count})。\n"
-                                       f"期望 Payload: {expected_payload_size} bytes, 实际: {actual_payload_size} bytes")
+                                       f"期望 Payload: {expected_payload_size} bytes, 实际: {actual_payload_size} bytes"), self.metadata
 
                 self.log(">> 文件结构检查完毕，未发现严重错误。")
-                return True, "检查通过 (Valid)"
+                return True, "检查通过 (Valid)", self.metadata
 
         except Exception as e:
             import traceback
-            return False, f"发生未处理的异常: {str(e)}\n{traceback.format_exc()}"
+            return False, f"发生未处理的异常: {str(e)}\n{traceback.format_exc()}", {}
 
 # ==========================================
 # 多线程工作类 (Worker)
@@ -168,7 +166,7 @@ class NBLValidator:
 
 class ValidationWorker(QObject):
     finished = pyqtSignal()
-    file_processed = pyqtSignal(str, bool, str, str) # filepath, is_valid, status_text, log_text
+    file_processed = pyqtSignal(str, bool, str, str, dict) # filepath, is_valid, status_text, log_text, metadata
 
     def __init__(self, file_paths):
         super().__init__()
@@ -181,11 +179,11 @@ class ValidationWorker(QObject):
             if not self.is_running:
                 break
             
-            is_valid, status = validator.validate(path)
+            is_valid, status, metadata = validator.validate(path)
             log_text = "\n".join(validator.log_messages)
             
             # Emit result
-            self.file_processed.emit(path, is_valid, status, log_text)
+            self.file_processed.emit(path, is_valid, status, log_text, metadata)
             
         self.finished.emit()
 
@@ -329,7 +327,7 @@ class NBLCheckerApp(QMainWindow):
 
         self.thread.start()
 
-    def update_row(self, path, is_valid, status, log_text):
+    def update_row(self, path, is_valid, status, log_text, metadata):
         if path in self.files_map:
             row = self.files_map[path]
             
@@ -342,6 +340,7 @@ class NBLCheckerApp(QMainWindow):
             
             # Store log in the filename item for retrieval
             self.table.item(row, 0).setData(Qt.UserRole + 1, log_text)
+            self.table.item(row, 0).setData(Qt.UserRole + 2, metadata)
             
             self.progress.setValue(self.progress.value() + 1)
             
@@ -356,9 +355,42 @@ class NBLCheckerApp(QMainWindow):
         QMessageBox.information(self, "完成", "批量检查已完成！")
 
     def show_log(self, row, col):
-        log = self.table.item(row, 0).data(Qt.UserRole + 1)
+        item = self.table.item(row, 0)
+        log = item.data(Qt.UserRole + 1)
+        metadata = item.data(Qt.UserRole + 2)
+        
         if log:
-            self.log_view.setText(log)
+            display_text = ""
+            if metadata:
+                display_text += "=== 元数据 (Metadata) ===\n"
+                display_text += f"版本 (Version): {metadata.get('version')}\n"
+                display_text += f"目标帧率 (FPS): {metadata.get('fps')}\n"
+                display_text += f"总帧数 (Total Frames): {metadata.get('total_frames')}\n"
+                display_text += f"关键帧数 (Keyframes): {metadata.get('kf_count')}\n"
+                display_text += f"贴图数量 (Textures): {metadata.get('tex_count')}\n"
+                
+                attrs = metadata.get('attributes', 0)
+                attr_list = []
+                if attrs & 0x01: attr_list.append("Alpha")
+                if attrs & 0x02: attr_list.append("Size")
+                display_text += f"属性掩码 (Attrs): {attrs} ({', '.join(attr_list)})\n"
+                
+                b_min = metadata.get('bbox_min', (0,0,0))
+                b_max = metadata.get('bbox_max', (0,0,0))
+                display_text += f"包围盒最小点 (BBox Min): [{b_min[0]:.2f}, {b_min[1]:.2f}, {b_min[2]:.2f}]\n"
+                display_text += f"包围盒最大点 (BBox Max): [{b_max[0]:.2f}, {b_max[1]:.2f}, {b_max[2]:.2f}]\n"
+                
+                textures = metadata.get('textures', [])
+                if textures:
+                    display_text += "贴图列表 (Texture List):\n"
+                    for i, t in enumerate(textures):
+                        display_text += f"  [{i}] {t}\n"
+                
+                display_text += "\n" + "="*30 + "\n\n"
+            
+            display_text += "=== 检查日志 (Validation Log) ===\n"
+            display_text += log
+            self.log_view.setText(display_text)
         else:
             self.log_view.setText("（等待检查或无日志）")
 

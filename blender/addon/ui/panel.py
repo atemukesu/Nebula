@@ -3,7 +3,7 @@ from ..utils.dependencies import HAS_ZSTD
 
 
 class NEBULA_PT_Panel(Panel):
-    bl_label = "NebulaFX Fast"
+    bl_label = "NebulaFX NBL Exporter"
     bl_idname = "NEBULA_PT_Panel"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -13,7 +13,7 @@ class NEBULA_PT_Panel(Panel):
         layout = self.layout
         props = context.scene.nebula_props
         if not HAS_ZSTD:
-            layout.label(text="需安装 zstandard", icon="ERROR")
+            layout.label(text="请安装 zstandard", icon="ERROR")
             return
         layout.prop(props, "target_collection")
         layout.prop(props, "filepath")

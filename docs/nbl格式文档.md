@@ -80,7 +80,7 @@ struct TextureEntry {
 
 *位于文件剩余区域。通过 Seek Table 定位。*
 
-> **⚠️ 关键实现细节 (Critical Implementation Note):**
+> **关键实现细节 (Critical Implementation Note):**
 > 1. **压缩边界:** Zstd 压缩的输入必须是 **`[Chunk Header] + [Payload]`** 的完整拼接数据。
 > * **错误做法:** `Header + Zstd(Payload)` (会导致解码器读不到 Magic Number 报错)。
 > * **正确做法:** `Zstd(Header + Payload)`。解压后的第 1 个字节必须是 `FrameType`。

@@ -16,7 +16,7 @@ class NEBULA_OT_ExportFast(Operator):
 
     def invoke(self, context, event):
         if not HAS_ZSTD:
-            self.report({"ERROR"}, "需安装 zstandard")
+            self.report({"ERROR"}, "请安装 zstandard")
             return {"CANCELLED"}
 
         # 1. 准备数据
@@ -204,9 +204,6 @@ class NEBULA_OT_ExportFast(Operator):
             f"[{self.current_frame}/{self.end_frame}] {current_frame_particles}"
             + bpy.app.translations.pgettext(" 粒子")
         )
-
-        # Force UI Redraw to prevent Ghosting/Driver Timeout
-        bpy.ops.wm.redraw_timer(type="DRAW_WIN_SWAP", iterations=1)
 
     def cancel(self, context):
         if self._writer:

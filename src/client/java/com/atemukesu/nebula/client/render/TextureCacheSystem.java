@@ -19,9 +19,9 @@ public class TextureCacheSystem {
     /**
      * 获取或加载纹理资源
      *
-     * @param cacheKey 唯一标识符 (通常是 NBL 文件路径)
+     * @param cacheKey 唯一标识符
      * @param entries  如果缓存不存在，用于加载的纹理列表
-     * @return 准备好的共享资源 (已增加引用计数)
+     * @return 准备好的共享资源 (引用计数)
      */
     public static synchronized SharedTextureResource acquire(String cacheKey,
             List<ParticleTextureManager.TextureEntry> entries) {

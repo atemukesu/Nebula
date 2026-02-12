@@ -2,8 +2,12 @@ package com.atemukesu.nebula.client.loader;
 
 import com.atemukesu.nebula.Nebula;
 import com.atemukesu.nebula.client.render.ParticleTextureManager;
+import com.atemukesu.nebula.client.render.SharedTextureResource;
+import com.atemukesu.nebula.client.render.TextureAtlasMap;
+import com.atemukesu.nebula.client.render.TextureCacheSystem;
 import com.atemukesu.nebula.particle.data.NblHeader;
 import com.github.luben.zstd.Zstd;
+import net.minecraft.client.MinecraftClient;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.system.MemoryUtil;
 
@@ -50,6 +54,12 @@ public class NblStreamer implements Runnable {
     private float[] bboxMin = new float[3];
     private float[] bboxMax = new float[3];
 
+    // 持有资源引用
+    private final SharedTextureResource textureResource;
+
+    // 依然持有 Map 的快捷引用 (为了性能，不用每次都去 resource.getMap())
+    private final TextureAtlasMap textureMap;
+
     // [优化] 使用数组 (Structure of Arrays) 代替 HashMap，提升 CPU 缓存命中率
     // 默认分配 100w 粒子容量，避免频繁扩容
     private final ParticleStateData state = new ParticleStateData(1_050_000);
@@ -81,8 +91,17 @@ public class NblStreamer implements Runnable {
             Math.max(2, Runtime.getRuntime().availableProcessors() - 1));
     private static final int PARALLEL_THRESHOLD = 5000;
 
-    public NblStreamer(File nblFile) throws IOException {
+    public NblStreamer(File nblFile, SharedTextureResource resource) throws IOException {
         this.file = nblFile;
+        this.textureResource = resource;
+        // 增加引用计数 (Streamer 开始使用)
+        if (this.textureResource != null) {
+            this.textureResource.grab();
+        }
+
+        // 从资源中获取 Map
+        this.textureMap = resource != null ? resource.getMap() : TextureAtlasMap.EMPTY;
+
         this.gpuBufferQueue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
         parseHeader();
     }
@@ -112,11 +131,8 @@ public class NblStreamer implements Runnable {
             textureEntries.clear();
             for (int i = 0; i < textureCount; i++) {
                 int pathLen = readUnsignedShortLE(raf);
-                byte[] pathBytes = new byte[pathLen];
-                raf.readFully(pathBytes);
-                textureEntries.add(new ParticleTextureManager.TextureEntry(
-                        new String(pathBytes, StandardCharsets.UTF_8),
-                        raf.read() & 0xFF, raf.read() & 0xFF));
+                // Skip path bytes + rows (1 byte) + cols (1 byte)
+                raf.skipBytes(pathLen + 2);
             }
 
             this.frameOffsets = new long[totalFrames];
@@ -144,6 +160,44 @@ public class NblStreamer implements Runnable {
 
             this.header = new NblHeader(targetFps, totalFrames, textureEntries);
         }
+    }
+
+    /**
+     * 静态辅助方法：仅预扫描纹理列表 (不创建 Streamer 实例)
+     * 用于在主线程提前加载纹理并生成 Map
+     */
+    public static List<ParticleTextureManager.TextureEntry> preScanTextures(File file) throws IOException {
+        List<ParticleTextureManager.TextureEntry> entries = new ArrayList<>();
+        try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
+            ByteBuffer headerBuf = ByteBuffer.allocate(20).order(ByteOrder.LITTLE_ENDIAN);
+            raf.readFully(headerBuf.array()); // Read up to textureCount
+
+            byte[] magic = new byte[8];
+            headerBuf.get(magic);
+            if (!new String(magic, StandardCharsets.US_ASCII).equals("NEBULAFX")) {
+                throw new IOException("Invalid NBL file");
+            }
+
+            int textureCount = headerBuf.getShort(16) & 0xFFFF;
+
+            raf.seek(48);
+
+            for (int i = 0; i < textureCount; i++) {
+                int pathLen = readUnsignedShortLE_Static(raf);
+                byte[] pathBytes = new byte[pathLen];
+                raf.readFully(pathBytes);
+                entries.add(new ParticleTextureManager.TextureEntry(
+                        new String(pathBytes, StandardCharsets.UTF_8),
+                        raf.read() & 0xFF, raf.read() & 0xFF));
+            }
+        }
+        return entries;
+    }
+
+    private static int readUnsignedShortLE_Static(RandomAccessFile raf) throws IOException {
+        int b1 = raf.read();
+        int b2 = raf.read();
+        return (b2 << 8) | b1;
     }
 
     private int readUnsignedShortLE(RandomAccessFile raf) throws IOException {
@@ -531,8 +585,8 @@ public class NblStreamer implements Runnable {
         MemoryUtil.memPutInt(addr + 28, colorPacked);
 
         // === Vec4 #3: TexID, SeqID, Padding... ===
-        // 预计算 Texture Layer
-        float layerIndex = ParticleTextureManager.calculateLayerIndex(state.tex[id] & 0xFF, state.seq[id] & 0xFF);
+        // 使用私有的 textureMap 查询，无需访问全局静态类，无需 volatile 开销
+        float layerIndex = textureMap.getLayer(state.tex[id] & 0xFF, state.seq[id] & 0xFF);
         MemoryUtil.memPutFloat(addr + 32, layerIndex);
         MemoryUtil.memPutFloat(addr + 36, 0f); // Padding
         MemoryUtil.memPutFloat(addr + 40, 0f); // Padding
@@ -644,17 +698,21 @@ public class NblStreamer implements Runnable {
         gpuBufferQueue.drainTo(cleanupList);
         for (ByteBuffer buf : cleanupList)
             releaseBuffer(buf);
-    }
+            
+        // 【关键】通知主线程释放纹理引用
+        if (this.textureResource != null) {
+            MinecraftClient.getInstance().execute(() -> {
+                TextureCacheSystem.release(this.textureResource);
+            });
+
+    }}
 
     public BlockingQueue<ByteBuffer> getQueue() {
         return gpuBufferQueue;
     }
 
     public void loadTextures() {
-        if (!textureEntries.isEmpty())
-            ParticleTextureManager.loadFromNblEntries(textureEntries);
-        else
-            ParticleTextureManager.init();
+        // Logically this is now handled externally before Streamer is created.
     }
 
     public void stop() {

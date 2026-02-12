@@ -7,6 +7,9 @@ import com.atemukesu.nebula.Nebula;
 import com.atemukesu.nebula.client.loader.NblStreamer;
 import com.atemukesu.nebula.client.render.AnimationFrame;
 import com.atemukesu.nebula.client.render.GpuParticleRenderer;
+import com.atemukesu.nebula.client.render.ParticleTextureManager;
+import com.atemukesu.nebula.client.render.SharedTextureResource;
+import com.atemukesu.nebula.client.render.TextureCacheSystem;
 import com.atemukesu.nebula.client.util.IrisUtil;
 import com.atemukesu.nebula.client.util.CurrentTimeUtil;
 import com.atemukesu.nebula.config.ModConfig;
@@ -63,6 +66,13 @@ public class ClientAnimationManager {
      * 播放动画
      */
     public void playAnimation(String name, Vec3d origin) {
+
+        if (!MinecraftClient.getInstance().isOnThread()) {
+            MinecraftClient.getInstance().execute(() -> playAnimation(name, origin));
+            Nebula.LOGGER.error("[Nebula/Animation] playAnimation called on wrong thread, deferring to main thread.");
+            return;
+        }
+
         Path animationPath = AnimationLoader.getAnimationPath(name);
         if (animationPath == null) {
             Nebula.LOGGER.warn("Animation not found: {}", name);
@@ -80,7 +90,17 @@ public class ClientAnimationManager {
 
         try {
             File file = animationPath.toFile();
-            AnimationInstance instance = new AnimationInstance(file, origin);
+
+            // 1. 预扫描纹理列表
+            List<ParticleTextureManager.TextureEntry> entries = NblStreamer.preScanTextures(file);
+
+            // 2. 获取共享纹理资源 (TextureCacheSystem 负责缓存和加载)
+            SharedTextureResource resource = TextureCacheSystem.acquire(file.getAbsolutePath(), entries);
+
+            // 3. 创建实例并传递资源
+            // 注意：resource 引用计数已由 acquire 增加 (ref=1)
+            // AnimationInstance 会持有这个引用，直到销毁
+            AnimationInstance instance = new AnimationInstance(file, origin, resource);
             instance.start();
 
             synchronized (activeInstances) {
@@ -275,6 +295,7 @@ public class ClientAnimationManager {
                             relY,
                             relZ,
                             true,
+                            instance.getTextureId(),
                             partialTicks);
                 } else {
                     GpuParticleRenderer.renderStandardBatch(
@@ -284,6 +305,7 @@ public class ClientAnimationManager {
                             relY,
                             relZ,
                             true,
+                            instance.getTextureId(),
                             partialTicks);
                 }
             }
@@ -477,6 +499,7 @@ public class ClientAnimationManager {
                             relY,
                             relZ,
                             true,
+                            instance.getTextureId(),
                             partialTicks);
                 } else {
                     GpuParticleRenderer.renderStandardBatch(
@@ -486,6 +509,7 @@ public class ClientAnimationManager {
                             relY,
                             relZ,
                             true,
+                            instance.getTextureId(),
                             partialTicks);
                 }
             }
@@ -704,6 +728,7 @@ public class ClientAnimationManager {
                             relY,
                             relZ,
                             true,
+                            instance.getTextureId(),
                             partialTicks);
                 } else {
                     GpuParticleRenderer.renderStandardBatch(
@@ -713,6 +738,7 @@ public class ClientAnimationManager {
                             relY,
                             relZ,
                             true,
+                            instance.getTextureId(),
                             partialTicks);
                 }
             }
@@ -792,6 +818,9 @@ public class ClientAnimationManager {
     /**
      * 动画实例类
      */
+    /**
+     * 动画实例类
+     */
     private static class AnimationInstance {
         private final File file;
         private final Vec3d origin;
@@ -803,16 +832,24 @@ public class ClientAnimationManager {
         private int targetFps;
         // 状态
         private boolean isStarted = false;
-        private boolean isFinished = false;
+        private volatile boolean isFinished = false;
         private boolean texturesLoaded = false;
 
         // 缓存的帧数据
         private ByteBuffer lastFrameData;
 
-        public AnimationInstance(File file, Vec3d origin) throws IOException {
+        // 【架构变更】持有共享纹理资源
+        private final SharedTextureResource textureResource;
+
+        public AnimationInstance(File file, Vec3d origin, SharedTextureResource resource) throws IOException {
             this.file = file;
             this.origin = origin;
-            this.streamer = new NblStreamer(file);
+            this.textureResource = resource;
+            // 既然构造时已经有了 Resource，说明纹理已加载
+            this.texturesLoaded = true;
+
+            // 创建 Streamer (Streamer 也会持有 resource 引用)
+            this.streamer = new NblStreamer(file, textureResource);
             this.targetFps = streamer.getTargetFps();
         }
 
@@ -837,11 +874,11 @@ public class ClientAnimationManager {
             // 重新创建 Streamer 以便重置状态
             try {
                 if (isStarted) {
-                    this.streamer = new NblStreamer(file);
+                    this.streamer = new NblStreamer(file, textureResource);
                 }
             } catch (IOException e) {
                 Nebula.LOGGER.error("Failed to restart animation stream", e);
-                isFinished = true;
+                stop(); // 停止并释放资源
                 return;
             }
 
@@ -856,14 +893,18 @@ public class ClientAnimationManager {
         }
 
         public void ensureTexturesLoaded() {
+            // 已在构造函数中通过 SharedTextureResource 保证
             if (!texturesLoaded) {
-                streamer.loadTextures();
                 texturesLoaded = true;
             }
         }
 
+        public int getTextureId() {
+            return textureResource != null ? textureResource.getGlTextureId() : 0;
+        }
+
         public ByteBuffer getNextFrame() {
-            if (!isStarted)
+            if (!isStarted || isFinished)
                 return null;
 
             Double replayTime = CurrentTimeUtil.getReplayTime();
@@ -876,12 +917,8 @@ public class ClientAnimationManager {
             double duration = (double) totalFrames / targetFps;
 
             // [修复] 统一的时间范围检查（适用于所有模式）
-            // 原本只有 ReplayMod 环境会检查，导致普通游戏模式下动画超时后仍持续渲染
-
-            // [倒带检测] ReplayMod 倒带时会从头重新发包，然后快进到目标位置
-            // （replay 时间只会单调递增，不会跳变）
-            // elapsed < 0 说明当前 replay 时间已倒退到此动画的创建时间之前
-            // 直接销毁此实例，ReplayMod 快进时会重新发包创建新的实例
+            // [倒带检测] ReplayMod 倒带时不应手动销毁，而是由 ReplayMod 重新创建实例?
+            // 实际上这里的逻辑是如果时间倒退，销毁当前实例，等待新的播放指令。
             if (replayTime != null && elapsed < 0) {
                 stop();
                 return null;
@@ -902,14 +939,14 @@ public class ClientAnimationManager {
 
             // Simple Seek for jumps (forward or backward large jumps)
             if (Math.abs(renderedFrames - expectedFrame) > 30) {
-                // Hard seek only on big jumps
                 streamer.seek(expectedFrame);
                 renderedFrames = expectedFrame;
                 return lastFrameData; // Wait for seek
             }
 
-            if (isFinished && lastFrameData == null)
-                return null;
+            if (lastFrameData == null) {
+                // Initial load
+            }
 
             ByteBuffer newData = null;
 
@@ -952,13 +989,9 @@ public class ClientAnimationManager {
             // 处理新数据
             if (newData != null) {
                 if (newData.capacity() == 0) {
-                    isFinished = true;
-                    // Properly release the last frame so it stops rendering
-                    if (lastFrameData != null) {
-                        NblStreamer.releaseBuffer(lastFrameData);
-                        lastFrameData = null;
-                    }
-                    NblStreamer.releaseBuffer(newData); // EOF buffer
+                    // EOF buffer
+                    stop(); // Finish
+                    NblStreamer.releaseBuffer(newData); // Release EOF buffer
                     return null;
                 }
 
@@ -975,6 +1008,10 @@ public class ClientAnimationManager {
         }
 
         public void stop() {
+            if (isFinished)
+                return;
+            isFinished = true;
+
             if (streamer != null) {
                 streamer.stop();
             }
@@ -983,7 +1020,12 @@ public class ClientAnimationManager {
                 NblStreamer.releaseBuffer(lastFrameData);
                 lastFrameData = null;
             }
-            isFinished = true;
+
+            // 释放纹理资源引用 (Reference Counting)
+            // 只有当实例彻底销毁时才释放
+            if (textureResource != null) {
+                TextureCacheSystem.release(textureResource);
+            }
         }
 
         public boolean isFinished() {
@@ -994,12 +1036,6 @@ public class ClientAnimationManager {
             return origin;
         }
 
-        /**
-         * 获取动画在世界坐标系中的 AABB
-         * 用于视锥剔除检测
-         * 
-         * @return 世界坐标系的边界框，如果数据不可用则返回 null
-         */
         public Box getWorldBoundingBox() {
             if (streamer == null)
                 return null;

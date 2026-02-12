@@ -110,7 +110,7 @@ public class GpuParticleRenderer {
         RenderSystem.assertOnRenderThread();
 
         try {
-            ParticleTextureManager.init();
+            // ParticleTextureManager.init(); // Removed
 
             // 检查 OpenGL 版本，需要 4.4+ 支持 PMB
             String version = GL11.glGetString(GL11.GL_VERSION);
@@ -367,7 +367,8 @@ public class GpuParticleRenderer {
         RenderSystem.depthFunc(GL11.GL_LEQUAL);
 
         // 4. 解绑粒子纹理
-        ParticleTextureManager.unbind();
+        // ParticleTextureManager.unbind(); // Removed
+        GL11.glBindTexture(GL30.GL_TEXTURE_2D_ARRAY, 0);
 
         // 5. 重置纹理绑定 (使用 RenderSystem 确保状态同步)
         RenderSystem.activeTexture(GL13.GL_TEXTURE1);
@@ -392,7 +393,7 @@ public class GpuParticleRenderer {
             Matrix4f modelViewMatrix, Matrix4f projMatrix,
             float[] cameraRight, float[] cameraUp,
             float originX, float originY, float originZ,
-            boolean useTexture, float partialTicks) {
+            boolean useTexture, int glTextureId, float partialTicks) {
 
         if (particleCount <= 0 || data == null || !initialized || !shaderCompiled)
             return;
@@ -448,8 +449,9 @@ public class GpuParticleRenderer {
             GL20.glUniform1f(uEmissiveStrength, currentEmissive);
 
         // Textures
-        if (useTexture && ParticleTextureManager.isInitialized()) {
-            ParticleTextureManager.bind(0);
+        if (useTexture && glTextureId > 0) {
+            GL13.glActiveTexture(GL13.GL_TEXTURE0);
+            GL11.glBindTexture(GL30.GL_TEXTURE_2D_ARRAY, glTextureId);
             if (uSampler0 != -1)
                 GL20.glUniform1i(uSampler0, 0);
             if (uUseTexture != -1)
@@ -603,7 +605,9 @@ public class GpuParticleRenderer {
         // 1. Unbind Resources
         GL30.glBindVertexArray(0);
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, SSBO_BINDING_INDEX, 0);
-        ParticleTextureManager.unbind();
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, SSBO_BINDING_INDEX, 0);
+        // ParticleTextureManager.unbind(); // Removed
+        GL11.glBindTexture(GL30.GL_TEXTURE_2D_ARRAY, 0);
 
         RenderSystem.activeTexture(GL13.GL_TEXTURE0);
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
@@ -645,7 +649,7 @@ public class GpuParticleRenderer {
      */
     public static void renderStandardBatch(ByteBuffer data, int particleCount,
             float originX, float originY, float originZ,
-            boolean useTexture, float partialTicks) {
+            boolean useTexture, int glTextureId, float partialTicks) {
 
         if (!standardBatchActive) {
             Nebula.LOGGER.warn("[GpuParticleRenderer] renderStandardBatch called without beginStandardRendering!");
@@ -682,13 +686,15 @@ public class GpuParticleRenderer {
             GL20.glUniform1f(uPartialTicks, partialTicks);
 
         // Texture Binding
-        if (useTexture && ParticleTextureManager.isInitialized()) {
-            ParticleTextureManager.bind(0);
+        if (useTexture && glTextureId > 0) {
+            GL13.glActiveTexture(GL13.GL_TEXTURE0);
+            GL11.glBindTexture(GL30.GL_TEXTURE_2D_ARRAY, glTextureId);
             if (uSampler0 != -1)
                 GL20.glUniform1i(uSampler0, 0);
             if (uUseTexture != -1)
                 GL20.glUniform1i(uUseTexture, 1);
         } else {
+            GL11.glBindTexture(GL30.GL_TEXTURE_2D_ARRAY, 0);
             if (uUseTexture != -1)
                 GL20.glUniform1i(uUseTexture, 0);
         }
@@ -871,7 +877,13 @@ public class GpuParticleRenderer {
             GL20.glDeleteProgram(shaderProgram);
             shaderProgram = -1;
         }
-        ParticleTextureManager.cleanup();
+
+        if (oitFbo != null) {
+            // oitFbo.delete(); // Commenting out until method verified
+        }
+
+        // ParticleTextureManager.cleanup(); // Removed
+
         initialized = false;
         shaderCompiled = false;
         pmbSupported = false;

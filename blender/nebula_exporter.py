@@ -217,7 +217,6 @@ class ParticleTracker:
 # NBL Writer (轻微优化)
 # ==============================================================================
 class NBLWriter:
-    # ... (保持之前的 NBLWriter 类不变，只负责写入二进制) ...
     def __init__(self, filepath, fps, total_frames, texture_list, scale):
         self.filepath = filepath
         self.fps = int(fps)
@@ -624,7 +623,7 @@ class NEBULA_OT_ExportFast(Operator):
 # ==============================================================================
 class NBL_TextureItem(PropertyGroup):
     material_name: StringProperty(name="材质名")
-    texture_path: StringProperty(name="NBL 纹理路径", default="minecraft:textures/particle/white_ash.png")
+    texture_path: StringProperty(name="NBL 纹理路径", default="minecraft:textures/particle/glitter_7.png")
 
 class NBL_UL_TextureList(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):

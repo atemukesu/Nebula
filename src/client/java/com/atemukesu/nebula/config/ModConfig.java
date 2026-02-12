@@ -50,7 +50,7 @@ public class ModConfig {
         return this.renderInGame;
     }
 
-    public void setRenderInGame(boolean renderInGame) {
+    public void setRenderInGame(Boolean renderInGame) {
         this.renderInGame = renderInGame;
     }
 
@@ -58,7 +58,7 @@ public class ModConfig {
         return this.showDebugHud;
     }
 
-    public void setShowDebugHud(boolean showDebugHud) {
+    public void setShowDebugHud(Boolean showDebugHud) {
         this.showDebugHud = showDebugHud;
     }
 
@@ -66,7 +66,7 @@ public class ModConfig {
         return this.showPerformanceStats;
     }
 
-    public void setShowPerformanceStats(boolean show) {
+    public void setShowPerformanceStats(Boolean show) {
         this.showPerformanceStats = show;
     }
 
@@ -74,7 +74,7 @@ public class ModConfig {
         return this.showCharts;
     }
 
-    public void setShowCharts(boolean show) {
+    public void setShowCharts(Boolean show) {
         this.showCharts = show;
     }
 
@@ -115,7 +115,7 @@ public class ModConfig {
      * 
      * @param emissiveStrength 粒子发光强度
      */
-    public void setEmissiveStrength(float emissiveStrength) {
+    public void setEmissiveStrength(Float emissiveStrength) {
         this.emissiveStrength = emissiveStrength;
     }
 

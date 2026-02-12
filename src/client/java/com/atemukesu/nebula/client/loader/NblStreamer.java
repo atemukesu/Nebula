@@ -19,10 +19,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.stream.IntStream;
 
 /**
  * <h1>
@@ -74,13 +72,6 @@ public class NblStreamer implements Runnable {
     private volatile int fastForwardTo = -1;
 
     private static final int QUEUE_CAPACITY = 10;
-
-    // 并行处理相关
-    // 使用共享的 ForkJoinPool，避免创建过多线程
-    private static final ForkJoinPool PARALLEL_POOL = new ForkJoinPool(
-            Math.max(2, Runtime.getRuntime().availableProcessors() - 1));
-    // 粒子数超过此阈值时启用并行 GPU 写入
-    private static final int PARALLEL_THRESHOLD = 5000;
 
     public NblStreamer(File nblFile) throws IOException {
         this.file = nblFile;
@@ -358,6 +349,8 @@ public class NblStreamer implements Runnable {
         int seqOff = texOff + N;
         int idOff = seqOff + N;
 
+        long bufferAddr = (gpuBuffer != null) ? MemoryUtil.memAddress(gpuBuffer) : 0;
+
         for (int i = 0; i < particleCount; i++) {
             int id = data.getInt(idOff + i * 4);
             ParticleState p = stateMap.computeIfAbsent(id, k -> new ParticleState());
@@ -381,8 +374,8 @@ public class NblStreamer implements Runnable {
             p.texID = data.get(texOff + i) & 0xFF;
             p.seqID = data.get(seqOff + i) & 0xFF;
 
-            if (gpuBuffer != null)
-                writeParticleToGpuAbs(gpuBuffer, i, p);
+            if (bufferAddr != 0)
+                writeParticleToGpuDirect(bufferAddr, i, p);
         }
     }
 
@@ -402,13 +395,7 @@ public class NblStreamer implements Runnable {
         int seqOff = texOff + N;
         int idOff = seqOff + N;
 
-        // 【阶段 1】单线程解析并更新状态
-        // 创建状态快照数组用于并行写入
-        // 注意：ParticleState 是可变对象，需要复制值
-        float[][] stateSnapshots = null;
-        if (gpuBuffer != null) {
-            stateSnapshots = new float[particleCount][12]; // prevX,prevY,prevZ,size,x,y,z,r,g,b,a,texLayer
-        }
+        long bufferAddr = (gpuBuffer != null) ? MemoryUtil.memAddress(gpuBuffer) : 0;
 
         for (int i = 0; i < particleCount; i++) {
             int id = data.getInt(idOff + i * 4);
@@ -456,111 +443,19 @@ public class NblStreamer implements Runnable {
                 p.prevZ = oldZ;
             }
 
-            // 保存状态快照
-            if (gpuBuffer != null) {
-                stateSnapshots[i][0] = p.prevX;
-                stateSnapshots[i][1] = p.prevY;
-                stateSnapshots[i][2] = p.prevZ;
-                stateSnapshots[i][3] = p.size;
-                stateSnapshots[i][4] = p.x;
-                stateSnapshots[i][5] = p.y;
-                stateSnapshots[i][6] = p.z;
-                stateSnapshots[i][7] = p.r;
-                stateSnapshots[i][8] = p.g;
-                stateSnapshots[i][9] = p.b;
-                stateSnapshots[i][10] = p.a;
-                stateSnapshots[i][11] = ParticleTextureManager.calculateLayerIndex(p.texID, p.seqID);
-            }
-        }
-
-        // 【阶段 2】并行写入 GPU Buffer
-        if (gpuBuffer != null && stateSnapshots != null) {
-            final long bufferAddr = MemoryUtil.memAddress(gpuBuffer);
-            final float[][] snapshots = stateSnapshots; // final 引用供 lambda 使用
-
-            if (particleCount >= PARALLEL_THRESHOLD) {
-                // 并行写入（粒子数较多时有收益）
-                // 使用自定义的 ForkJoinPool，避免阻塞默认的 commonPool
-                try {
-                    PARALLEL_POOL.submit(() -> {
-                        IntStream.range(0, particleCount).parallel().forEach(i -> {
-                            writeParticleToGpuAbsFromSnapshot(bufferAddr, i, snapshots[i]);
-                        });
-                    }).get(); // 等待完成
-                } catch (Exception e) {
-                    // 并行执行失败，降级到顺序写入
-                    for (int i = 0; i < particleCount; i++) {
-                        writeParticleToGpuAbsFromSnapshot(bufferAddr, i, snapshots[i]);
-                    }
-                }
-            } else {
-                // 顺序写入（粒子数较少时避免并行开销）
-                for (int i = 0; i < particleCount; i++) {
-                    writeParticleToGpuAbsFromSnapshot(bufferAddr, i, snapshots[i]);
-                }
+            // 直接写入 GPU Buffer，避免中间对象分配
+            if (bufferAddr != 0) {
+                writeParticleToGpuDirect(bufferAddr, i, p);
             }
         }
     }
 
     /**
-     * 从状态快照写入 GPU 缓冲区（用于并行写入）
-     * 直接使用内存地址，无需 ByteBuffer 对象
+     * 将粒子数据直接写入 GPU 缓冲区 (SSBO std430 格式)
+     * 使用直接内存地址访问，避免 ByteBuffer 开销
      */
-    private void writeParticleToGpuAbsFromSnapshot(long bufferAddr, int index, float[] snapshot) {
-        long addr = bufferAddr + index * 48L;
-
-        // === Vec4 #1: PrevPos(xyz) + Size(w) ===
-        MemoryUtil.memPutFloat(addr, snapshot[0]); // prevX
-        MemoryUtil.memPutFloat(addr + 4, snapshot[1]); // prevY
-        MemoryUtil.memPutFloat(addr + 8, snapshot[2]); // prevZ
-        MemoryUtil.memPutFloat(addr + 12, snapshot[3]); // size
-
-        // === Vec4 #2: CurPos(xyz) + Color(w) ===
-        MemoryUtil.memPutFloat(addr + 16, snapshot[4]); // x
-        MemoryUtil.memPutFloat(addr + 20, snapshot[5]); // y
-        MemoryUtil.memPutFloat(addr + 24, snapshot[6]); // z
-
-        // 颜色压缩 (RGBA 4 bytes -> 1 int)
-        int colorPacked = ((int) snapshot[10] << 24) | ((int) snapshot[9] << 16) | ((int) snapshot[8] << 8)
-                | (int) snapshot[7];
-        MemoryUtil.memPutInt(addr + 28, colorPacked);
-
-        // === Vec4 #3: TexLayer + Padding ===
-        MemoryUtil.memPutFloat(addr + 32, snapshot[11]); // texLayer
-        MemoryUtil.memPutFloat(addr + 36, 0f);
-        MemoryUtil.memPutFloat(addr + 40, 0f);
-        MemoryUtil.memPutFloat(addr + 44, 0f);
-    }
-
-    /**
-     * 将粒子数据写入 GPU 缓冲区 (SSBO std430 格式)
-     * <p>
-     * 【性能优化】使用 MemoryUtil.memPutFloat/memPutInt 直接内存操作
-     * 相比 ByteBuffer.putFloat()，消除了 Java NIO 的边界检查开销
-     * 对于每帧处理 20,000+ 粒子，CPU 占用显著降低
-     * </p>
-     * <p>
-     * Layout (48 bytes):
-     * [0-11] PrevPos.xyz
-     * [12-15] Size
-     * [16-27] CurPos.xyz
-     * [28-31] Color (Packed RGBA)
-     * [32-35] TexID
-     * [36-47] Padding
-     * </p>
-     */
-    private void writeParticleToGpuAbs(ByteBuffer buf, int index, ParticleState p) {
-        int offset = index * 48; // 48 bytes per particle
-
-        // 越界检查（保留一次检查，避免崩溃）
-        if (offset + 48 > buf.capacity()) {
-            if (index == 0)
-                Nebula.LOGGER.error("Buffer overflow! Cap: {}, Req: {}", buf.capacity(), offset + 48);
-            return;
-        }
-
-        // 获取 Buffer 的内存地址（只需获取一次）
-        long addr = MemoryUtil.memAddress(buf) + offset;
+    private void writeParticleToGpuDirect(long baseAddr, int index, ParticleState p) {
+        long addr = baseAddr + index * 48L;
 
         // === Vec4 #1: PrevPos(xyz) + Size(w) ===
         MemoryUtil.memPutFloat(addr, p.prevX);
@@ -574,7 +469,6 @@ public class NblStreamer implements Runnable {
         MemoryUtil.memPutFloat(addr + 24, p.z);
 
         // 颜色压缩 (RGBA 4 bytes -> 1 int)
-        // Little Endian: ABGR in int memory (but GL reads bytes directly)
         int colorPacked = (p.a << 24) | (p.b << 16) | (p.g << 8) | p.r;
         MemoryUtil.memPutInt(addr + 28, colorPacked);
 

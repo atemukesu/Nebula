@@ -422,17 +422,20 @@ class NEBULA_OT_ShowStats(Operator):
         return {'FINISHED'}
 class NEBULA_OT_ExportFast(Operator):
     bl_idname = "nebula.export_nbl"
-    bl_label = "极速导出 NBL"
+    bl_label = "导出 NBL"
+    
+    _timer = None
+    _writer = None
     
     def invoke(self, context, event):
         if not HAS_ZSTD:
             self.report({'ERROR'}, "需安装 zstandard")
             return {'CANCELLED'}
         
-        # 准备数据
+        # 1. 准备数据
         self.props = context.scene.nebula_props
         self.depsgraph = context.evaluated_depsgraph_get()
-        self.trackers = {} # obj_name -> ParticleTracker
+        self.trackers = {} 
         
         # 材质映射
         self.mat_to_tex_id = {}
@@ -441,7 +444,7 @@ class NEBULA_OT_ExportFast(Operator):
             self.tex_paths.append(item.texture_path)
             self.mat_to_tex_id[item.material_name] = i
             
-        # 预加载图像 (只做一次)
+        # Image Cache
         self.image_cache = {}
         for img in bpy.data.images:
             if img.size[0] > 0:
@@ -450,22 +453,24 @@ class NEBULA_OT_ExportFast(Operator):
                 if img.channels == 3:
                     arr = np.dstack((arr, np.ones((img.size[1], img.size[0], 1))))
                 self.image_cache[img.name] = (arr, img.size[0], img.size[1])
-                
-        self.execute_export(context)
-        return {'FINISHED'}
 
-    def execute_export(self, context):
+        # Scene Setup
         scene = context.scene
-        start = scene.frame_start
-        end = scene.frame_end
+        self.start_frame = scene.frame_start
+        self.end_frame = scene.frame_end
+        self.current_frame = self.start_frame
         target_col = self.props.target_collection
         
-        # 1. 初始化 Tracker (在起始帧进行)
-        scene.frame_set(start)
+        if not target_col:
+            self.report({'ERROR'}, "未选择目标集合")
+            return {'CANCELLED'}
+
+        # 2. 初始化 Tracker (在起始帧进行)
+        scene.frame_set(self.start_frame)
+        self.depsgraph.update() # Ensure T-pose/Start pos
+        
         for obj in target_col.all_objects:
             if obj.type == 'MESH' and obj.visible_get():
-                # 必须强制更新 depsgraph 确保拿到的是变形后的网格
-                # 但第一帧通常是 T-Pose 或初始动作
                 eval_obj = obj.evaluated_get(self.depsgraph)
                 mesh = eval_obj.to_mesh()
                 
@@ -473,97 +478,146 @@ class NEBULA_OT_ExportFast(Operator):
                 success = tracker.precompute_distribution(mesh, self.props.sampling_density)
                 if success:
                     tracker.bake_colors(mesh.materials, self.image_cache, lambda msg: self.report({'INFO'}, msg))
-                    
-                    # 预计算材质 ID 映射 (极速核心)
+                    # Tex ID
                     tracker.static_tex_ids = np.zeros(len(tracker.tri_indices), dtype=np.uint8)
                     for i, mat in enumerate(obj.data.materials):
                         if mat and mat.name in self.mat_to_tex_id:
                             target_id = self.mat_to_tex_id[mat.name]
                             tracker.static_tex_ids[tracker.mat_indices == i] = target_id
-                            
+                    
                     self.trackers[obj.name] = tracker
                 
                 eval_obj.to_mesh_clear()
         
-        # 2. 逐帧导出
-        writer = NBLWriter(
+        # 3. Init Writer
+        self._writer = NBLWriter(
             bpy.path.abspath(self.props.filepath),
             scene.render.fps,
-            end - start + 1,
+            self.end_frame - self.start_frame + 1,
             self.tex_paths,
             self.props.scale
         )
+        self._writer.__enter__() # Open file
         
-        context.window_manager.progress_begin(0, end - start)
+        # 4. Start Modal
+        context.window_manager.modal_handler_add(self)
+        self._timer = context.window_manager.event_timer_add(0.001, window=context.window)
+        context.window_manager.progress_begin(0, self.end_frame - self.start_frame)
         
-        with writer:
-            for frame in range(start, end + 1):
-                scene.frame_set(frame)
-                # 这一步是关键：必须通知 Blender 更新 Depsgraph
-                # 否则 evaluated_get 拿到的可能是旧数据
-                self.depsgraph.update() 
-                
-                # --- 新增：强制刷新 UI 并在控制台打印进度 ---
-                bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
-                progress = (frame - start) / (end - start) if end > start else 1.0
-                print(f"导出进度: [{frame}/{end}] ({progress*100:.1f}%) | 粒子数: {current_frame_particles:<7}", end='\r')
-                # ------------------------------------------
+        # Init Progress Props
+        self.props.is_exporting = True
+        self.props.export_progress = 0.0
+        self.props.export_message = "准备导出..."
+        
+        return {'RUNNING_MODAL'}
 
-                frame_pos = []
-                frame_col = []
-                frame_size = []
-                frame_tex = []
-                frame_pid = []
-                current_frame_particles = 0
-                
-                for obj_name, tracker in self.trackers.items():
-                    obj = bpy.data.objects.get(obj_name)
-                    if not obj: continue
-                    
-                    eval_obj = obj.evaluated_get(self.depsgraph)
-                    mesh = eval_obj.to_mesh() 
-                    
-                    local_pos = tracker.compute_positions(mesh)
-                    if local_pos is not None:
-                        count = len(local_pos)
-                        current_frame_particles += count
-                        
-                        # Transform
-                        mat_world = eval_obj.matrix_world
-                        rot = np.array(mat_world.to_3x3()).T 
-                        loc = np.array(mat_world.translation)
-                        world_pos = local_pos @ rot + loc
-                        
-                        # MC Space (YZ Flip + Scale)
-                        mc_pos = np.empty_like(world_pos)
-                        mc_pos[:, 0] = world_pos[:, 0] * self.props.scale
-                        mc_pos[:, 1] = world_pos[:, 2] * self.props.scale
-                        mc_pos[:, 2] = world_pos[:, 1] * self.props.scale
-                        
-                        frame_pos.append(mc_pos)
-                        frame_col.append(tracker.static_colors)
-                        frame_size.append(np.full(count, int(self.props.particle_size * 100), dtype=np.uint16))
-                        frame_tex.append(tracker.static_tex_ids)
-                        frame_pid.append(np.arange(count, dtype=np.int32)) 
-                    
-                    eval_obj.to_mesh_clear()
-                
-                if frame_pos:
-                    writer.write_frame(
-                        np.vstack(frame_pos),
-                        np.vstack(frame_col),
-                        np.concatenate(frame_size),
-                        np.concatenate(frame_tex),
-                        np.concatenate(frame_pid)
-                    )
-                else:
-                    writer.write_frame(np.array([]), np.array([]), np.array([]), np.array([]), np.array([]))
-                
-                context.window_manager.progress_update(frame - start + 1)
+    def modal(self, context, event):
+        if event.type == 'ESC':
+            self.cancel(context)
+            return {'CANCELLED'}
         
-        print("\n导出完成！")
+        if event.type == 'TIMER':
+            if self.current_frame > self.end_frame:
+                self.finish(context)
+                return {'FINISHED'}
+            
+            try:
+                self.process_frame(context)
+                self.current_frame += 1
+            except Exception as e:
+                self.report({'ERROR'}, f"Error: {e}")
+                import traceback
+                traceback.print_exc()
+                self.cancel(context)
+                return {'CANCELLED'}
+                
+        return {'RUNNING_MODAL'}
+
+    def process_frame(self, context):
+        scene = context.scene
+        scene.frame_set(self.current_frame)
+        self.depsgraph.update()
+        
+        frame_pos = []
+        frame_col = []
+        frame_size = []
+        frame_tex = []
+        frame_pid = []
+        current_frame_particles = 0
+        
+        for obj_name, tracker in self.trackers.items():
+            obj = bpy.data.objects.get(obj_name)
+            if not obj: continue
+            
+            eval_obj = obj.evaluated_get(self.depsgraph)
+            mesh = eval_obj.to_mesh() 
+            
+            local_pos = tracker.compute_positions(mesh)
+            if local_pos is not None:
+                count = len(local_pos)
+                current_frame_particles += count
+                
+                mat_world = eval_obj.matrix_world
+                rot = np.array(mat_world.to_3x3()).T 
+                loc = np.array(mat_world.translation)
+                world_pos = local_pos @ rot + loc
+                
+                mc_pos = np.empty_like(world_pos)
+                mc_pos[:, 0] = world_pos[:, 0] * self.props.scale
+                mc_pos[:, 1] = world_pos[:, 2] * self.props.scale
+                mc_pos[:, 2] = world_pos[:, 1] * self.props.scale
+                
+                frame_pos.append(mc_pos)
+                frame_col.append(tracker.static_colors)
+                frame_size.append(np.full(count, int(self.props.particle_size * 100), dtype=np.uint16))
+                frame_tex.append(tracker.static_tex_ids)
+                frame_pid.append(np.arange(count, dtype=np.int32)) 
+            
+            eval_obj.to_mesh_clear()
+        
+        if frame_pos:
+            self._writer.write_frame(
+                np.vstack(frame_pos),
+                np.vstack(frame_col),
+                np.concatenate(frame_size),
+                np.concatenate(frame_tex),
+                np.concatenate(frame_pid)
+            )
+        else:
+            self._writer.write_frame(np.array([]), np.array([]), np.array([]), np.array([]), np.array([]))
+
+        # Progress update
+        steps = self.current_frame - self.start_frame
+        total = self.end_frame - self.start_frame
+        context.window_manager.progress_update(steps)
+        
+        progress = steps / total if total > 0 else 1.0
+        print(f"导出进度: [{self.current_frame}/{self.end_frame}] ({progress*100:.1f}%) | 粒子数: {current_frame_particles:<7}", end='\r')
+
+        # Update UI Props
+        self.props.export_progress = progress * 100.0
+        self.props.export_message = f"[{self.current_frame}/{self.end_frame}] {current_frame_particles} 粒子"
+
+    def cancel(self, context):
+        if self._writer:
+            self._writer.__exit__(None, None, None)
+        context.window_manager.event_timer_remove(self._timer)
         context.window_manager.progress_end()
-        self.report({'INFO'}, f"极速导出完成！")
+        self.props.is_exporting = False
+        self.props.export_message = "已取消"
+        self.report({'WARNING'}, "导出已取消")
+        print("\n导出已取消")
+
+    def finish(self, context):
+        if self._writer:
+            self._writer.__exit__(None, None, None)
+        context.window_manager.event_timer_remove(self._timer)
+        context.window_manager.progress_end()
+        self.props.is_exporting = False
+        self.props.export_progress = 100.0
+        self.props.export_message = "完成!"
+        self.report({'INFO'}, "极速导出完成！")
+        print("\n导出完成！")
 
 # ==============================================================================
 # UI 相关 (保持不变)
@@ -601,6 +655,11 @@ class NebulaProps(PropertyGroup):
     particle_size: FloatProperty(name="大小", default=0.15)
     texture_list: CollectionProperty(type=NBL_TextureItem)
     texture_list_index: IntProperty()
+    
+    # 进度条相关
+    is_exporting: BoolProperty(default=False)
+    export_progress: FloatProperty(name="进度", default=0.0, min=0.0, max=100.0, subtype='PERCENTAGE')
+    export_message: StringProperty(default="")
 
 class NEBULA_PT_Panel(Panel):
     bl_label = "NebulaFX Fast"
@@ -626,7 +685,13 @@ class NEBULA_PT_Panel(Panel):
         row.operator("nebula.refresh_materials", icon='FILE_REFRESH', text="")
         
         layout.operator("nebula.show_stats", icon='INFO')
-        layout.operator("nebula.export_nbl", icon='EXPORT')
+        
+        if props.is_exporting:
+            col = layout.column(align=True)
+            col.label(text=props.export_message)
+            col.prop(props, "export_progress", text="导出进度", slider=True, emboss=False)
+        else:
+            layout.operator("nebula.export_nbl", icon='EXPORT')
 
 classes = (NBL_TextureItem, NEBULA_OT_RefreshMaterials, NEBULA_OT_ShowStats, NEBULA_OT_ExportFast, NEBULA_PT_Panel, NebulaProps, NBL_UL_TextureList)
 

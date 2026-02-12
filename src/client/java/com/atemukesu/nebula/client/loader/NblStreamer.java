@@ -3,7 +3,6 @@ package com.atemukesu.nebula.client.loader;
 import com.atemukesu.nebula.Nebula;
 import com.atemukesu.nebula.client.render.ParticleTextureManager;
 import com.atemukesu.nebula.particle.data.NblHeader;
-import com.atemukesu.nebula.particle.data.ParticleState;
 import com.github.luben.zstd.Zstd;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.system.MemoryUtil;
@@ -17,10 +16,12 @@ import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
+import java.util.Arrays;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.IntStream;
 
 /**
  * <h1>
@@ -49,8 +50,9 @@ public class NblStreamer implements Runnable {
     private float[] bboxMin = new float[3];
     private float[] bboxMax = new float[3];
 
-    // 使用 HashMap 存储粒子状态 (因为是单线程运行，无需 Concurrent)
-    private final Map<Integer, ParticleState> stateMap = new java.util.HashMap<>();
+    // [优化] 使用数组 (Structure of Arrays) 代替 HashMap，提升 CPU 缓存命中率
+    // 默认分配 100w 粒子容量，避免频繁扩容
+    private final ParticleStateData state = new ParticleStateData(1_050_000);
 
     private final BlockingQueue<ByteBuffer> gpuBufferQueue;
     private final AtomicBoolean isRunning = new AtomicBoolean(true);
@@ -62,6 +64,7 @@ public class NblStreamer implements Runnable {
 
     // GPU Buffer Pool (智能对象池)
     private static final int INITIAL_BUFFER_SIZE = 1 * 1024 * 1024; // 1MB
+    private static final int MAX_BUFFER_CAPACITY = 8 * 1024 * 1024; // 8MB
     private static final java.util.concurrent.ConcurrentLinkedQueue<ByteBuffer> freeBuffers = new java.util.concurrent.ConcurrentLinkedQueue<>();
     private static final java.util.concurrent.atomic.AtomicLong totalAllocatedMemory = new java.util.concurrent.atomic.AtomicLong(
             0);
@@ -72,6 +75,11 @@ public class NblStreamer implements Runnable {
     private volatile int fastForwardTo = -1;
 
     private static final int QUEUE_CAPACITY = 10;
+
+    // 并行处理相关
+    private static final ForkJoinPool PARALLEL_POOL = new ForkJoinPool(
+            Math.max(2, Runtime.getRuntime().availableProcessors() - 1));
+    private static final int PARALLEL_THRESHOLD = 5000;
 
     public NblStreamer(File nblFile) throws IOException {
         this.file = nblFile;
@@ -216,7 +224,7 @@ public class NblStreamer implements Runnable {
                         channel.position(offset);
 
                         // 2. 状态清零 (I-Frame 特性：不依赖旧状态)
-                        stateMap.clear();
+                        state.clear();
                         // 清空管道里的旧数据
                         gpuBufferQueue.forEach(NblStreamer::releaseBuffer);
                         gpuBufferQueue.clear();
@@ -335,117 +343,160 @@ public class NblStreamer implements Runnable {
 
     private void processIFrame(ByteBuffer data, int particleCount, ByteBuffer gpuBuffer, int frameIdx) {
         // [优化] 计算所有字段的偏移量，避免循环内重复计算
-        int baseOffset = data.position();
+        final int baseOffset = data.position();
         int N = particleCount;
-        int xOff = baseOffset;
-        int yOff = xOff + (N * 4);
-        int zOff = yOff + (N * 4);
-        int rOff = zOff + (N * 4);
-        int gOff = rOff + N;
-        int bOff = gOff + N;
-        int aOff = bOff + N;
-        int sizeOff = aOff + N;
-        int texOff = sizeOff + (N * 2);
-        int seqOff = texOff + N;
-        int idOff = seqOff + N;
+        final int xOff = baseOffset;
+        final int yOff = xOff + (N * 4);
+        final int zOff = yOff + (N * 4);
+        final int rOff = zOff + (N * 4);
+        final int gOff = rOff + N;
+        final int bOff = gOff + N;
+        final int aOff = bOff + N;
+        final int sizeOff = aOff + N;
+        final int texOff = sizeOff + (N * 2);
+        final int seqOff = texOff + N;
+        final int idOff = seqOff + N;
 
         long bufferAddr = (gpuBuffer != null) ? MemoryUtil.memAddress(gpuBuffer) : 0;
 
+        // 1. 预扫描最大 ID
+        int maxId = -1;
         for (int i = 0; i < particleCount; i++) {
             int id = data.getInt(idOff + i * 4);
-            ParticleState p = stateMap.computeIfAbsent(id, k -> new ParticleState());
-            p.lastSeenFrame = frameIdx;
+            if (id > maxId)
+                maxId = id;
+        }
+        state.ensureCapacity(maxId);
+
+        for (int i = 0; i < particleCount; i++) {
+            int id = data.getInt(idOff + i * 4);
+
+            state.lastSeenFrame[id] = frameIdx;
 
             float nx = data.getFloat(xOff + i * 4);
             float ny = data.getFloat(yOff + i * 4);
             float nz = data.getFloat(zOff + i * 4);
-            p.x = nx;
-            p.y = ny;
-            p.z = nz;
-            p.prevX = nx;
-            p.prevY = ny;
-            p.prevZ = nz; // I-Frame Snap
 
-            p.r = data.get(rOff + i) & 0xFF;
-            p.g = data.get(gOff + i) & 0xFF;
-            p.b = data.get(bOff + i) & 0xFF;
-            p.a = data.get(aOff + i) & 0xFF;
-            p.size = Math.max(0.01f, (data.getShort(sizeOff + i * 2) & 0xFFFF) / 100.0f);
-            p.texID = data.get(texOff + i) & 0xFF;
-            p.seqID = data.get(seqOff + i) & 0xFF;
+            state.x[id] = nx;
+            state.y[id] = ny;
+            state.z[id] = nz;
+            state.prevX[id] = nx;
+            state.prevY[id] = ny;
+            state.prevZ[id] = nz;
+
+            state.r[id] = data.get(rOff + i);
+            state.g[id] = data.get(gOff + i);
+            state.b[id] = data.get(bOff + i);
+            state.a[id] = data.get(aOff + i);
+            state.size[id] = Math.max(0.01f, (data.getShort(sizeOff + i * 2) & 0xFFFF) / 100.0f);
+            state.tex[id] = data.get(texOff + i);
+            state.seq[id] = data.get(seqOff + i);
 
             if (bufferAddr != 0)
-                writeParticleToGpuDirect(bufferAddr, i, p);
+                writeParticleToGpuDirect(bufferAddr, i, id, state);
         }
     }
 
     private void processPFrame(ByteBuffer data, int particleCount, ByteBuffer gpuBuffer, int frameIdx) {
-        int baseOffset = data.position();
+        final int baseOffset = data.position();
         int N = particleCount;
-        // P-Frame 偏移计算
-        int dxOff = baseOffset;
-        int dyOff = dxOff + (N * 2);
-        int dzOff = dyOff + (N * 2);
-        int drOff = dzOff + (N * 2);
-        int dgOff = drOff + N;
-        int dbOff = dgOff + N;
-        int daOff = dbOff + N;
-        int sizeOff = daOff + N;
-        int texOff = sizeOff + (N * 2);
-        int seqOff = texOff + N;
-        int idOff = seqOff + N;
+        // P-Frame 偏移计算 (final for lambda)
+        final int dxOff = baseOffset;
+        final int dyOff = dxOff + (N * 2);
+        final int dzOff = dyOff + (N * 2);
+        final int drOff = dzOff + (N * 2);
+        final int dgOff = drOff + N;
+        final int dbOff = dgOff + N;
+        final int daOff = dbOff + N;
+        final int sizeOff = daOff + N;
+        final int texOff = sizeOff + (N * 2);
+        final int seqOff = texOff + N;
+        final int idOff = seqOff + N;
 
-        long bufferAddr = (gpuBuffer != null) ? MemoryUtil.memAddress(gpuBuffer) : 0;
+        final long bufferAddr = (gpuBuffer != null) ? MemoryUtil.memAddress(gpuBuffer) : 0;
 
+        // 1. 预扫描最大 ID，解决并行流扩容的竞态条件 (Race Condition)
+        int maxId = -1;
         for (int i = 0; i < particleCount; i++) {
             int id = data.getInt(idOff + i * 4);
-            ParticleState p = stateMap.computeIfAbsent(id, k -> new ParticleState());
+            if (id > maxId)
+                maxId = id;
+        }
+        state.ensureCapacity(maxId);
 
-            boolean isSpawn = (p.lastSeenFrame != frameIdx - 1);
+        // 定义处理逻辑 (Lambda)
+        java.util.function.IntConsumer processParticle = i -> {
+            int id = data.getInt(idOff + i * 4);
+
+            boolean isSpawn = (state.lastSeenFrame[id] != frameIdx - 1);
             if (isSpawn) {
-                p.x = 0;
-                p.y = 0;
-                p.z = 0;
-                p.r = 0;
-                p.g = 0;
-                p.b = 0;
-                p.a = 0;
-                p.size = 0;
-                p.texID = 0;
-                p.seqID = 0;
+                state.x[id] = 0;
+                state.y[id] = 0;
+                state.z[id] = 0;
+                state.r[id] = 0;
+                state.g[id] = 0;
+                state.b[id] = 0;
+                state.a[id] = 0;
+                state.size[id] = 0;
+                state.tex[id] = 0;
+                state.seq[id] = 0;
             }
-            p.lastSeenFrame = frameIdx;
+            state.lastSeenFrame[id] = frameIdx;
 
-            float oldX = p.x, oldY = p.y, oldZ = p.z;
+            float oldX = state.x[id], oldY = state.y[id], oldZ = state.z[id];
 
-            // 应用增量 (Short / 1000.0)
-            p.x += data.getShort(dxOff + i * 2) / 1000.0f;
-            p.y += data.getShort(dyOff + i * 2) / 1000.0f;
-            p.z += data.getShort(dzOff + i * 2) / 1000.0f;
-            p.r = (p.r + data.get(drOff + i)) & 0xFF;
-            p.g = (p.g + data.get(dgOff + i)) & 0xFF;
-            p.b = (p.b + data.get(dbOff + i)) & 0xFF;
-            // set min/max for alpha to prevent wrap-around
-            int newAlpha = p.a + data.get(daOff + i);
-            p.a = Math.max(0, Math.min(255, newAlpha));
-            // set min for size
-            p.size = Math.max(0.01f, p.size + data.getShort(sizeOff + i * 2) / 100.0f);
-            p.texID = (p.texID + data.get(texOff + i)) & 0xFF;
-            p.seqID = (p.seqID + data.get(seqOff + i)) & 0xFF;
+            // 应用增量 (Short / 1000.0) -> 注意这里是 +=
+            state.x[id] += data.getShort(dxOff + i * 2) / 1000.0f;
+            state.y[id] += data.getShort(dyOff + i * 2) / 1000.0f;
+            state.z[id] += data.getShort(dzOff + i * 2) / 1000.0f;
+
+            // Color updates
+            state.r[id] += data.get(drOff + i);
+            state.g[id] += data.get(dgOff + i);
+            state.b[id] += data.get(dbOff + i);
+
+            // Alpha clamping needed
+            int currentAlpha = state.a[id] & 0xFF;
+            int deltaAlpha = data.get(daOff + i);
+            int newAlpha = Math.max(0, Math.min(255, currentAlpha + deltaAlpha));
+            state.a[id] = (byte) newAlpha;
+
+            // Size min check
+            state.size[id] = Math.max(0.01f, state.size[id] + data.getShort(sizeOff + i * 2) / 100.0f);
+
+            state.tex[id] += data.get(texOff + i);
+            state.seq[id] += data.get(seqOff + i);
 
             if (isSpawn) {
-                p.prevX = p.x;
-                p.prevY = p.y;
-                p.prevZ = p.z;
+                state.prevX[id] = state.x[id];
+                state.prevY[id] = state.y[id];
+                state.prevZ[id] = state.z[id];
             } else {
-                p.prevX = oldX;
-                p.prevY = oldY;
-                p.prevZ = oldZ;
+                state.prevX[id] = oldX;
+                state.prevY[id] = oldY;
+                state.prevZ[id] = oldZ;
             }
 
-            // 直接写入 GPU Buffer，避免中间对象分配
+            // 直接写入 GPU Buffer
             if (bufferAddr != 0) {
-                writeParticleToGpuDirect(bufferAddr, i, p);
+                writeParticleToGpuDirect(bufferAddr, i, id, state);
+            }
+        };
+
+        // 决策：并行 vs 串行
+        if (particleCount >= PARALLEL_THRESHOLD) {
+            try {
+                // 使用 ForkJoinPool 执行并行流
+                PARALLEL_POOL.submit(() -> IntStream.range(0, particleCount).parallel().forEach(processParticle)).get(); // 阻塞等待完成
+            } catch (Exception e) {
+                Nebula.LOGGER.error("Parallel processing failed", e);
+                // Fallback (though rare)
+                IntStream.range(0, particleCount).forEach(processParticle);
+            }
+        } else {
+            // 少量粒子直接串行
+            for (int i = 0; i < particleCount; i++) {
+                processParticle.accept(i);
             }
         }
     }
@@ -454,31 +505,109 @@ public class NblStreamer implements Runnable {
      * 将粒子数据直接写入 GPU 缓冲区 (SSBO std430 格式)
      * 使用直接内存地址访问，避免 ByteBuffer 开销
      */
-    private void writeParticleToGpuDirect(long baseAddr, int index, ParticleState p) {
+    private void writeParticleToGpuDirect(long baseAddr, int index, int id, ParticleStateData state) {
         long addr = baseAddr + index * 48L;
 
         // === Vec4 #1: PrevPos(xyz) + Size(w) ===
-        MemoryUtil.memPutFloat(addr, p.prevX);
-        MemoryUtil.memPutFloat(addr + 4, p.prevY);
-        MemoryUtil.memPutFloat(addr + 8, p.prevZ);
-        MemoryUtil.memPutFloat(addr + 12, p.size);
+        MemoryUtil.memPutFloat(addr, state.prevX[id]);
+        MemoryUtil.memPutFloat(addr + 4, state.prevY[id]);
+        MemoryUtil.memPutFloat(addr + 8, state.prevZ[id]);
+        MemoryUtil.memPutFloat(addr + 12, state.size[id]);
 
         // === Vec4 #2: CurPos(xyz) + Color(w) ===
-        MemoryUtil.memPutFloat(addr + 16, p.x);
-        MemoryUtil.memPutFloat(addr + 20, p.y);
-        MemoryUtil.memPutFloat(addr + 24, p.z);
+        MemoryUtil.memPutFloat(addr + 16, state.x[id]);
+        MemoryUtil.memPutFloat(addr + 20, state.y[id]);
+        MemoryUtil.memPutFloat(addr + 24, state.z[id]);
 
         // 颜色压缩 (RGBA 4 bytes -> 1 int)
-        int colorPacked = (p.a << 24) | (p.b << 16) | (p.g << 8) | p.r;
+        // Little Endian: R, G, B, A (0xAA BB GG RR for int value if low byte is R)
+        // GLSL reads: (r, g, b, a) from low to high bytes.
+        // So we need to put: R at +0, G at +1, B at +2, A at +3.
+        // memPutInt (assuming Little Endian CPU): (A << 24 | B << 16 | G << 8 | R)
+        int colorPacked = ((state.a[id] & 0xFF) << 24) |
+                ((state.b[id] & 0xFF) << 16) |
+                ((state.g[id] & 0xFF) << 8) |
+                (state.r[id] & 0xFF);
         MemoryUtil.memPutInt(addr + 28, colorPacked);
 
         // === Vec4 #3: TexID, SeqID, Padding... ===
         // 预计算 Texture Layer
-        float layerIndex = ParticleTextureManager.calculateLayerIndex(p.texID, p.seqID);
+        float layerIndex = ParticleTextureManager.calculateLayerIndex(state.tex[id] & 0xFF, state.seq[id] & 0xFF);
         MemoryUtil.memPutFloat(addr + 32, layerIndex);
         MemoryUtil.memPutFloat(addr + 36, 0f); // Padding
         MemoryUtil.memPutFloat(addr + 40, 0f); // Padding
         MemoryUtil.memPutFloat(addr + 44, 0f); // Padding
+    }
+
+    // 内部类：粒子状态数据 (SoA Layout)
+    private static class ParticleStateData {
+        public float[] x, y, z;
+        public float[] prevX, prevY, prevZ;
+        public float[] size;
+        public byte[] r, g, b, a;
+        public byte[] tex, seq;
+        public int[] lastSeenFrame;
+
+        private int capacity;
+
+        public ParticleStateData(int initialCapacity) {
+            this.capacity = initialCapacity;
+            allocate(capacity);
+        }
+
+        private void allocate(int cap) {
+            x = new float[cap];
+            y = new float[cap];
+            z = new float[cap];
+            prevX = new float[cap];
+            prevY = new float[cap];
+            prevZ = new float[cap];
+            size = new float[cap];
+            r = new byte[cap];
+            g = new byte[cap];
+            b = new byte[cap];
+            a = new byte[cap];
+            tex = new byte[cap];
+            seq = new byte[cap];
+            lastSeenFrame = new int[cap];
+            Arrays.fill(lastSeenFrame, -1);
+        }
+
+        public void ensureCapacity(int id) {
+            if (id >= capacity) {
+                synchronized (this) {
+                    if (id >= capacity) {
+                        int newCap = Math.max(capacity * 2, id + 4096);
+                        resize(newCap);
+                    }
+                }
+            }
+        }
+
+        private void resize(int newCap) {
+            Nebula.LOGGER.warn("Resizing ParticleStateData from {} to {}", capacity, newCap);
+            x = Arrays.copyOf(x, newCap);
+            y = Arrays.copyOf(y, newCap);
+            z = Arrays.copyOf(z, newCap);
+            prevX = Arrays.copyOf(prevX, newCap);
+            prevY = Arrays.copyOf(prevY, newCap);
+            prevZ = Arrays.copyOf(prevZ, newCap);
+            size = Arrays.copyOf(size, newCap);
+            r = Arrays.copyOf(r, newCap);
+            g = Arrays.copyOf(g, newCap);
+            b = Arrays.copyOf(b, newCap);
+            a = Arrays.copyOf(a, newCap);
+            tex = Arrays.copyOf(tex, newCap);
+            seq = Arrays.copyOf(seq, newCap);
+            int oldCap = capacity;
+            lastSeenFrame = Arrays.copyOf(lastSeenFrame, newCap);
+            Arrays.fill(lastSeenFrame, oldCap, newCap, -1);
+            capacity = newCap;
+        }
+
+        public void clear() {
+            Arrays.fill(lastSeenFrame, -1);
+        }
     }
 
     // 内存管理辅助函数
@@ -610,6 +739,12 @@ public class NblStreamer implements Runnable {
     public static void releaseBuffer(ByteBuffer buf) {
         // EOF buffer (cap=0) 不回收，其他回收
         if (buf != null && buf.capacity() > 0) {
+            // [Fix] 防止池中保留过大的缓冲区导致内存无法释放
+            if (buf.capacity() > MAX_BUFFER_CAPACITY) {
+                totalAllocatedMemory.addAndGet(-buf.capacity());
+                // Let GC handle it
+                return;
+            }
             buf.clear();
             freeBuffers.offer(buf);
         }

@@ -51,6 +51,7 @@ class MeshScatterTracker(BaseTracker):
 
         tri_count = len(loop_tris)
         if tri_count == 0:
+            print(f"[Nebula] {self.name}: No triangles found.")
             self.valid = False
             return
 
@@ -69,13 +70,35 @@ class MeshScatterTracker(BaseTracker):
         total_area = np.sum(areas)
 
         if total_area <= 0:
+            print(f"[Nebula] {self.name}: Total area is <= 0 ({total_area}).")
             self.valid = False
             return
 
-        target_count = int(total_area * density * 10)
+        # Relaxed Particle Count Calculation
+        raw_count = total_area * density * 10
+        # Ensure at least 1 particle if raw_count is close to 1 or density is > 0 but area is small
+        # But if raw_count is extremely small (e.g. 0.0001), maybe user intended 0?
+        # Let's say: if density > 0 and area > 0 ...
+        target_count = int(raw_count)
+
         if target_count < 1:
-            self.valid = False
-            return
+            if (
+                raw_count > 0.001
+            ):  # Threshold to force at least 1 particle for small meshes
+                print(
+                    f"[Nebula] {self.name}: Count {target_count} too low (Raw={raw_count:.4f}). Forcing 1 particle."
+                )
+                target_count = 1
+            else:
+                print(
+                    f"[Nebula] {self.name}: Count {target_count} too low (Raw={raw_count:.4f}). Valid=False."
+                )
+                self.valid = False
+                return
+        else:
+            print(
+                f"[Nebula] {self.name}: Generating {target_count} particles (Area={total_area:.4f}, Density={density})"
+            )
 
         probs = areas / total_area
         rng = np.random.default_rng(seed)

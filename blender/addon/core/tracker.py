@@ -8,7 +8,9 @@ class BaseTracker:
         self.valid = False
         self.is_world_space = False
 
-    def prepare(self, eval_obj, settings, mat_map, image_cache, report_fn=None):
+    def prepare(
+        self, eval_obj, settings, mat_map, image_cache, report_fn=None, mesh=None
+    ):
         self.valid = True
 
     def get_data(self, eval_obj, mesh=None):
@@ -34,15 +36,24 @@ class MeshScatterTracker(BaseTracker):
         self.static_tex_ids = None
         self.loop_tri_verts = None
 
-    def prepare(self, eval_obj, settings, mat_map, image_cache, report_fn=None):
-        mesh = eval_obj.to_mesh()
+    def prepare(
+        self, eval_obj, settings, mat_map, image_cache, report_fn=None, mesh=None
+    ):
+        # 如果外部传入了 mesh，就使用外部的，并不由本函数负责清理
+        # 否则自己创建并负责清理
+        own_mesh = False
+        if mesh is None:
+            mesh = eval_obj.to_mesh()
+            own_mesh = True
+
         try:
             self._precompute(mesh, settings.sampling_density)
             if self.valid:
                 self._bake_colors(mesh.materials, image_cache, report_fn)
                 self._bake_tex_ids(mesh.materials, mat_map)
         finally:
-            eval_obj.to_mesh_clear()
+            if own_mesh:
+                eval_obj.to_mesh_clear()
 
     def _precompute(self, mesh, density, seed=0):
         mesh.calc_loop_triangles()
@@ -238,7 +249,9 @@ class NativeParticleTracker(BaseTracker):
         self.is_world_space = True
         self.tex_id = 0
 
-    def prepare(self, eval_obj, settings, mat_map, image_cache, report_fn=None):
+    def prepare(
+        self, eval_obj, settings, mat_map, image_cache, report_fn=None, mesh=None
+    ):
         self.valid = True
         psys = eval_obj.particle_systems.get(self.psys_name)
         if psys:
@@ -278,7 +291,9 @@ class PointCloudTracker(BaseTracker):
         super().__init__(name)
         self.is_world_space = False
 
-    def prepare(self, eval_obj, settings, mat_map, image_cache, report_fn=None):
+    def prepare(
+        self, eval_obj, settings, mat_map, image_cache, report_fn=None, mesh=None
+    ):
         self.valid = True
 
     def get_data(self, eval_obj, mesh=None):

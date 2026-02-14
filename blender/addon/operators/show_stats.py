@@ -69,7 +69,9 @@ class NEBULA_OT_ShowStats(Operator):
             mesh = eval_obj.to_mesh() if needs_mesh else None
             try:
                 # Prepare (Calculate Distribution)
-                tracker.prepare(eval_obj, props, mat_map, dummy_cache, collect_report)
+                tracker.prepare(
+                    eval_obj, props, mat_map, dummy_cache, collect_report, mesh=mesh
+                )
 
                 if tracker.valid:
                     # Get Data for one frame (Current Frame)

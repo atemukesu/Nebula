@@ -175,13 +175,22 @@ public class ClientAnimationManager {
         int totalParticles = 0;
         int renderedInstancesCount = 0;
 
-        // [修复] 直接从 Camera 构建纯净的视图旋转矩阵
-        // Camera.getRotation() 返回的是从 视空间->世界空间 的旋转
-        // 我们需要 世界空间->视空间，所以需要它的共轭 (Conjugate/Inverse)
-        Matrix4f mvMatrix = new Matrix4f();
-        // 1.21 和 1.20.1 的 Camera 都是基于 JOML 的，可以直接用
+        // 定义一个矩阵变量
+        Matrix4f mvMatrix;
+
+        //? if >= 1.21 {
+        
+        // 1.21.1 自己构建矩阵
+        mvMatrix = new Matrix4f();
         mvMatrix.rotate(camera.getRotation().conjugate(new Quaternionf()));
         
+        //? } else {
+        /*mvMatrix = new Matrix4f(modelViewMatrix);
+        mvMatrix.m30(0.0f);
+        mvMatrix.m31(0.0f);
+        mvMatrix.m32(0.0f);
+        *///?}
+
         // [DEBUG] 打印构建的矩阵信息
         if (!hasLoggedStandardRenderPath && !hasLoggedIrisRenderPath) {
             Nebula.LOGGER.info("[Matrix Debug - Mixin] Built View Rotation Matrix:\n{}", mvMatrix.toString());
@@ -364,11 +373,22 @@ public class ClientAnimationManager {
         Camera camera = context.camera();
         Vec3d cameraPos = camera.getPos();
 
-        // [修复] 直接从 Camera 构建纯净的视图旋转矩阵
-        // 这能保证无论是在原版还是模组环境下，旋转矩阵都是绝对正确的
-        Matrix4f modelViewMatrix = new Matrix4f();
-        modelViewMatrix.rotate(camera.getRotation().conjugate(new Quaternionf()));
+        // 定义矩阵
+        Matrix4f modelViewMatrix;
 
+        //? if >= 1.21 {
+        
+        // 1.21.1
+        // 这能保证无论是在原版还是模组环境下，旋转矩阵都是绝对正确的
+        modelViewMatrix = new Matrix4f();
+        modelViewMatrix.rotate(camera.getRotation().conjugate(new Quaternionf()));
+        
+        //? } else {
+        /*modelViewMatrix = new Matrix4f(context.matrixStack().peek().getPositionMatrix());
+        modelViewMatrix.m30(0.0f);
+        modelViewMatrix.m31(0.0f);
+        modelViewMatrix.m32(0.0f);
+        *///? }
         if (!hasLoggedStandardRenderPath) {
             Nebula.LOGGER.info("[Matrix Debug] Built View Rotation Matrix:\n{}", modelViewMatrix);
         }

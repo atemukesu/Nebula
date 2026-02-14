@@ -72,9 +72,6 @@ public class GpuParticleRenderer {
     // Uniform locations
     private static int uModelViewMat = -1;
     private static int uProjMat = -1;
-    // 移除 CameraRight 和 CameraUp，因为现在使用视空间 Billboarding
-    // private static int uCameraRight = -1;
-    // private static int uCameraUp = -1;
     private static int uOrigin = -1;
     private static int uSampler0 = -1;
     private static int uUseTexture = -1;
@@ -261,9 +258,6 @@ public class GpuParticleRenderer {
         Nebula.LOGGER.info("  PartialTicks={}, EmissiveStrength={}", uPartialTicks, uEmissiveStrength);
         Nebula.LOGGER.info("  RenderPass={}", uRenderPass);
     }
-
-    // Global OIT (Order Independent Transparency) Support
-    // ==========================================
 
     // 保存 Global OIT 状态
     private static int globalOitTargetFboId = -1;

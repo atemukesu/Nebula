@@ -16,17 +16,17 @@ bl_info = {
 
 
 def register():
+    bpy.app.translations.register(__name__, i18n.translation.i18n_dict)
     properties.register()
     operators.register()
     ui.register()
-    bpy.app.translations.register(__name__, i18n.translation.i18n_dict)
 
 
 def unregister():
-    bpy.app.translations.unregister(__name__)
     ui.unregister()
     operators.unregister()
     properties.unregister()
+    bpy.app.translations.unregister(__name__)
 
 
 if __name__ == "__main__":

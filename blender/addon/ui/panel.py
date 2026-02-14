@@ -39,7 +39,11 @@ class NEBULA_PT_Panel(Panel):
         )
         row.operator("nebula.refresh_materials", icon="FILE_REFRESH", text="")
 
-        layout.operator("nebula.show_stats", icon="INFO")
+        layout.operator(
+            "nebula.show_stats",
+            icon="INFO",
+            text=bpy.app.translations.pgettext("View Estimated Statistics"),
+        )
 
         if props.is_exporting:
             col = layout.column(align=True)
@@ -52,4 +56,8 @@ class NEBULA_PT_Panel(Panel):
                 emboss=False,
             )
         else:
-            layout.operator("nebula.export_nbl", icon="EXPORT")
+            layout.operator(
+                "nebula.export_nbl",
+                icon="EXPORT",
+                text=bpy.app.translations.pgettext("Export NBL"),
+            )

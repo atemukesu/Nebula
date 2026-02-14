@@ -221,11 +221,16 @@ public class NblSyncScreen extends Screen {
 
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+        // 保存当前渲染状态
         //? if >=1.21 {
         this.renderInGameBackground(context);
         //? } else {
          /*this.renderBackground(context);
         *///? }
+        
+        // 确保渲染状态正确恢复
+        context.getMatrices().push();
+        
         int centerX = this.width / 2;
         int currentY = 15;
 
@@ -291,6 +296,9 @@ public class NblSyncScreen extends Screen {
         this.logListWidget.render(context, mouseX, mouseY, delta);
 
         super.render(context, mouseX, mouseY, delta);
+        
+        // 恢复渲染状态
+        context.getMatrices().pop();
     }
 
     @Override

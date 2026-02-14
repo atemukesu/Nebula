@@ -10,7 +10,6 @@ import com.atemukesu.nebula.client.config.ModConfig;
 import com.atemukesu.nebula.networking.ModPackets;
 import com.atemukesu.nebula.client.gui.DebugHud;
 import net.fabricmc.api.ClientModInitializer;
-import net.minecraft.util.math.Vec3d;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
@@ -85,9 +84,9 @@ public class NebulaClient implements ClientModInitializer {
 
         ClientPlayNetworking.registerGlobalReceiver(ModPackets.SYNC_DATA,
                 (client, handler, buf, responseSender) -> {
-                    // Thoroughly stop hash comparison in singleplayer
-                    if (client.isInSingleplayer()) {
-                        Nebula.LOGGER.info("Singleplayer mode detected, skipping animation sync.");
+                    // 根据配置决定是否在单人模式下跳过同步
+                    if (client.isInSingleplayer() && !ModConfig.getInstance().getSyncSingleplayerAnimations()) {
+                        Nebula.LOGGER.info("Singleplayer mode detected and sync disabled in config, skipping animation sync.");
                         return;
                     }
                     int count = buf.readInt();
@@ -139,8 +138,9 @@ public class NebulaClient implements ClientModInitializer {
 
         // 4. Sync Data
         ClientPlayNetworking.registerGlobalReceiver(ModPackets.SyncDataPayload.ID, (payload, context) -> {
-            if (context.client().isInSingleplayer()) {
-                Nebula.LOGGER.info("Singleplayer mode detected, skipping animation sync.");
+            // 根据配置决定是否在单人模式下跳过同步
+            if (context.client().isInSingleplayer() && !ModConfig.getInstance().getSyncSingleplayerAnimations()) {
+                Nebula.LOGGER.info("Singleplayer mode detected and sync disabled in config, skipping animation sync.");
                 return;
             }
             // 数据读取逻辑现在在 Payload 类内部完成，这里直接拿结果
@@ -162,8 +162,8 @@ public class NebulaClient implements ClientModInitializer {
                 GpuParticleRenderer.preloadOIT(w, h);
                 Nebula.LOGGER.info("OIT preloaded on world join.");
             }
-            // Open Sync Screen if not singleplayer
-            if (!client.isInSingleplayer()) {
+            // Open Sync Screen if not singleplayer or if sync is enabled in config
+            if (!client.isInSingleplayer() || ModConfig.getInstance().getSyncSingleplayerAnimations()) {
                 client.execute(() -> {
                     com.atemukesu.nebula.client.gui.screen.NblSyncScreen screen = new com.atemukesu.nebula.client.gui.screen.NblSyncScreen(
                             net.minecraft.text.Text.translatable("nebula.sync.title"));
@@ -174,7 +174,7 @@ public class NebulaClient implements ClientModInitializer {
                     client.setScreen(screen);
                 });
             } else {
-                Nebula.LOGGER.info("Singleplayer server detected, skipping animation sync.");
+                Nebula.LOGGER.info("Singleplayer server detected and sync disabled in config, skipping animation sync.");
             }
         });
 

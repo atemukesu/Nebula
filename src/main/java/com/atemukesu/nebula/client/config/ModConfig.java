@@ -20,6 +20,9 @@ public class ModConfig {
     private BlendMode blendMode;
     private float emissiveStrength;
     private CullingBehavior cullingBehavior;
+    
+    // 测试选项
+    private boolean syncSingleplayerAnimations;
 
     public ModConfig() {
         // 默认在游戏内渲染粒子
@@ -33,6 +36,8 @@ public class ModConfig {
         // 默认使用用户自定义的亮度
         this.emissiveStrength = 2.0f;
         this.cullingBehavior = CullingBehavior.SIMULATE_ONLY;
+        // 默认关闭单人模式动画同步（测试用）
+        this.syncSingleplayerAnimations = false;
     }
 
     public static ModConfig getInstance() {
@@ -137,5 +142,23 @@ public class ModConfig {
      */
     public void setCullingBehavior(CullingBehavior cullingBehavior) {
         this.cullingBehavior = cullingBehavior;
+    }
+    
+    /**
+     * 获取单人模式是否启用动画同步
+     * 
+     * @return 单人模式动画同步开关
+     */
+    public boolean getSyncSingleplayerAnimations() {
+        return this.syncSingleplayerAnimations;
+    }
+
+    /**
+     * 设置单人模式动画同步开关
+     * 
+     * @param syncSingleplayerAnimations 是否启用单人模式动画同步
+     */
+    public void setSyncSingleplayerAnimations(Boolean syncSingleplayerAnimations) {
+        this.syncSingleplayerAnimations = syncSingleplayerAnimations;
     }
 }

@@ -60,6 +60,8 @@
     "gui.nebula.config.culling_behavior.pause_and_hide": "完全に一時停止",
     "gui.nebula.config.emissive_strength": "エミッシブ強度",
     "gui.nebula.config.emissive_strength.desc": "パーティクルのエミッシブ強度を制御します。値が高いほどパーティクルがより輝くようになります。",
+    "gui.nebula.config.sync_singleplayer": "シングルプレイ アニメーション同期",
+    "gui.nebula.config.sync_singleplayer.desc": "テスト用オプション、有効化は推奨されません。\n\nシングルプレイゲームでもアニメーションファイルの同期チェックを行います。通常、シングルプレイモードではクライアントとサーバーが同じファイルを使用するため、同期は必要ありません。",
     "command.nebula.client.reload.success": "アニメーションが正常に再読み込みされました！",
     "command.nebula.client.reload.failed": "アニメーションの再読み込みに失敗しました。詳細はログを確認してください。"
 }

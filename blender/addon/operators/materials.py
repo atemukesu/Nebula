@@ -3,7 +3,7 @@ from bpy.types import Operator
 
 class NEBULA_OT_RefreshMaterials(Operator):
     bl_idname = "nebula.refresh_materials"
-    bl_label = "刷新"
+    bl_label = "Refresh"
 
     def execute(self, context):
         props = context.scene.nebula_props

@@ -7,7 +7,7 @@ from ..core.tracker import ParticleTracker
 
 class NEBULA_OT_ShowStats(Operator):
     bl_idname = "nebula.show_stats"
-    bl_label = "查看预估统计"
+    bl_label = "View Estimated Statistics"
 
     def execute(self, context):
         props = context.scene.nebula_props
@@ -15,7 +15,10 @@ class NEBULA_OT_ShowStats(Operator):
         target_col = props.target_collection
 
         if not target_col:
-            self.report({"ERROR"}, "未选择目标集合")
+            self.report(
+                {"ERROR"},
+                bpy.app.translations.pgettext("Target collection not selected"),
+            )
             return {"CANCELLED"}
 
         # 1. 准备 Dummy Cache 用于检测贴图 (不实际读取像素，只为跑通逻辑)
@@ -71,7 +74,12 @@ class NEBULA_OT_ShowStats(Operator):
                 eval_obj.to_mesh_clear()
 
         if total_particles == 0:
-            self.report({"WARNING"}, "没有生成任何粒子，请检查密度或模型")
+            self.report(
+                {"WARNING"},
+                bpy.app.translations.pgettext(
+                    "No particles generated, please check density or model"
+                ),
+            )
             return {"CANCELLED"}
 
         dims = max_pos - min_pos
@@ -79,15 +87,15 @@ class NEBULA_OT_ShowStats(Operator):
         def show_msg(self, context):
             layout = self.layout
             layout.label(
-                text=bpy.app.translations.pgettext("预估粒子总数: ")
+                text=bpy.app.translations.pgettext("Estimated Total Particles: ")
                 + f"{total_particles:,}"
             )
             layout.label(
-                text=bpy.app.translations.pgettext("MC 尺寸: ")
+                text=bpy.app.translations.pgettext("MC Dimensions: ")
                 + f"{dims[0]:.1f} x {dims[2]:.1f} x {dims[1]:.1f}"
             )
             layout.separator()
-            layout.label(text="材质检查报告:")
+            layout.label(text=bpy.app.translations.pgettext("Material Check Report:"))
             for msg in texture_reports:
                 # 简单的颜色区分
                 if "Default" in msg:
@@ -96,7 +104,9 @@ class NEBULA_OT_ShowStats(Operator):
                     layout.label(text=msg, icon="CHECKMARK")
 
         context.window_manager.popup_menu(
-            show_msg, title="NebulaFX 统计 & 材质检查", icon="INFO"
+            show_msg,
+            title=bpy.app.translations.pgettext("NebulaFX Stats & Material Check"),
+            icon="INFO",
         )
 
         return {"FINISHED"}

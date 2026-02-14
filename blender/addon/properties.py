@@ -11,25 +11,33 @@ from bpy.props import (
 
 
 class NBL_TextureItem(PropertyGroup):
-    material_name: StringProperty(name="材质名")
+    material_name: StringProperty(name="Material Name")
     texture_path: StringProperty(
-        name="NBL 纹理路径", default="minecraft:textures/particle/glitter_7.png"
+        name="NBL Texture Path", default="minecraft:textures/particle/glitter_7.png"
     )
 
 
 class NebulaProps(PropertyGroup):
-    target_collection: PointerProperty(name="目标集合", type=bpy.types.Collection)
-    filepath: StringProperty(name="路径", subtype="FILE_PATH", default="//output.nbl")
-    scale: FloatProperty(name="缩放", default=10.0)
-    sampling_density: FloatProperty(name="采样密度", default=10.0)
-    particle_size: FloatProperty(name="大小", default=0.15)
+    target_collection: PointerProperty(
+        name="Target Collection", type=bpy.types.Collection
+    )
+    filepath: StringProperty(name="Path", subtype="FILE_PATH", default="//output.nbl")
+    scale: FloatProperty(name="Scale", default=10.0)
+    sampling_density: FloatProperty(name="Sampling Density", default=10.0)
+    particle_size: FloatProperty(name="Size", default=0.15)
+
+    # Data Source Selection
+    use_mesh_scatter: BoolProperty(name="Mesh Scatter", default=True)
+    use_particle_system: BoolProperty(name="Particle System", default=False)
+    use_point_cloud: BoolProperty(name="Point Cloud", default=False)
+
     texture_list: CollectionProperty(type=NBL_TextureItem)
     texture_list_index: IntProperty()
 
-    # 进度条相关
+    # Progress related
     is_exporting: BoolProperty(default=False)
     export_progress: FloatProperty(
-        name="进度", default=0.0, min=0.0, max=100.0, subtype="PERCENTAGE"
+        name="Progress", default=0.0, min=0.0, max=100.0, subtype="PERCENTAGE"
     )
     export_message: StringProperty(default="")
 

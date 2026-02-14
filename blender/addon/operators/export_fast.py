@@ -2,27 +2,27 @@ import bpy
 import numpy as np
 import traceback
 from bpy.types import Operator
-from ..core.tracker import ParticleTracker
+from ..core.tracker import MeshScatterTracker, NativeParticleTracker, PointCloudTracker
 from ..core.writer import NBLWriter
 from ..utils.dependencies import HAS_ZSTD
 
 
 class NEBULA_OT_ExportFast(Operator):
     bl_idname = "nebula.export_nbl"
-    bl_label = "导出 NBL"
+    bl_label = "Export NBL"
 
     _timer = None
     _writer = None
 
     def invoke(self, context, event):
         if not HAS_ZSTD:
-            self.report({"ERROR"}, "请安装 zstandard")
+            self.report({"ERROR"}, bpy.app.translations.pgettext("zstandard required"))
             return {"CANCELLED"}
 
         # 1. 准备数据
         self.props = context.scene.nebula_props
         self.depsgraph = context.evaluated_depsgraph_get()
-        self.trackers = {}
+        self.trackers_list = []  # List of (obj_name, tracker)
 
         # 材质映射
         self.mat_to_tex_id = {}
@@ -49,40 +49,55 @@ class NEBULA_OT_ExportFast(Operator):
         target_col = self.props.target_collection
 
         if not target_col:
-            self.report({"ERROR"}, "未选择目标集合")
+            self.report(
+                {"ERROR"},
+                bpy.app.translations.pgettext("Target collection not selected"),
+            )
             return {"CANCELLED"}
 
         # 2. 初始化 Tracker (在起始帧进行)
         scene.frame_set(self.start_frame)
         self.depsgraph.update()  # Ensure T-pose/Start pos
 
+        def report_fn(msg):
+            self.report({"INFO"}, msg)
+
         for obj in target_col.all_objects:
-            if obj.type == "MESH" and obj.visible_get():
-                eval_obj = obj.evaluated_get(self.depsgraph)
-                mesh = eval_obj.to_mesh()
+            if not obj.visible_get():
+                continue
 
-                tracker = ParticleTracker()
-                success = tracker.precompute_distribution(
-                    mesh, self.props.sampling_density
+            eval_obj = obj.evaluated_get(self.depsgraph)
+
+            # P3: Mesh Scatter
+            if obj.type == "MESH" and self.props.use_mesh_scatter:
+                t = MeshScatterTracker(f"{obj.name}_mesh")
+                t.prepare(
+                    eval_obj,
+                    self.props,
+                    self.mat_to_tex_id,
+                    self.image_cache,
+                    report_fn,
                 )
-                if success:
-                    tracker.bake_colors(
-                        mesh.materials,
-                        self.image_cache,
-                        lambda msg: self.report({"INFO"}, msg),
-                    )
-                    # Tex ID
-                    tracker.static_tex_ids = np.zeros(
-                        len(tracker.tri_indices), dtype=np.uint8
-                    )
-                    for i, mat in enumerate(obj.data.materials):
-                        if mat and mat.name in self.mat_to_tex_id:
-                            target_id = self.mat_to_tex_id[mat.name]
-                            tracker.static_tex_ids[tracker.mat_indices == i] = target_id
+                if t.valid:
+                    self.trackers_list.append((obj.name, t))
 
-                    self.trackers[obj.name] = tracker
+            # P1: Native Particles
+            if self.props.use_particle_system and len(obj.particle_systems) > 0:
+                for psys in obj.particle_systems:
+                    # check settings if needed
+                    t = NativeParticleTracker(f"{obj.name}_{psys.name}", psys.name)
+                    t.prepare(
+                        eval_obj, self.props, self.mat_to_tex_id, self.image_cache
+                    )
+                    self.trackers_list.append((obj.name, t))
 
-                eval_obj.to_mesh_clear()
+            # P2: Point Cloud
+            # Blender < 3.0: No pointcloud object type usually exposed easily to python in standard build without geometry nodes usage becoming common.
+            # But Blender 3.4+ has 'POINTCLOUD' type.
+            if obj.type == "POINTCLOUD" and self.props.use_point_cloud:
+                t = PointCloudTracker(f"{obj.name}_pcl")
+                t.prepare(eval_obj, self.props, self.mat_to_tex_id, self.image_cache)
+                self.trackers_list.append((obj.name, t))
 
         # 3. Init Writer
         self._writer = NBLWriter(
@@ -104,7 +119,9 @@ class NEBULA_OT_ExportFast(Operator):
         # Init Progress Props
         self.props.is_exporting = True
         self.props.export_progress = 0.0
-        self.props.export_message = "准备导出..."
+        self.props.export_message = bpy.app.translations.pgettext(
+            "Preparing for export..."
+        )
 
         return {"RUNNING_MODAL"}
 
@@ -141,38 +158,62 @@ class NEBULA_OT_ExportFast(Operator):
         frame_pid = []
         current_frame_particles = 0
 
-        for obj_name, tracker in self.trackers.items():
+        for obj_name, tracker in self.trackers_list:
             obj = bpy.data.objects.get(obj_name)
             if not obj:
                 continue
 
             eval_obj = obj.evaluated_get(self.depsgraph)
-            mesh = eval_obj.to_mesh()
 
-            local_pos = tracker.compute_positions(mesh)
-            if local_pos is not None:
-                count = len(local_pos)
-                current_frame_particles += count
+            # Only MeshScatter needs explicit to_mesh here
+            mesh = None
+            if isinstance(tracker, MeshScatterTracker):
+                mesh = eval_obj.to_mesh()
 
-                mat_world = eval_obj.matrix_world
-                rot = np.array(mat_world.to_3x3()).T
-                loc = np.array(mat_world.translation)
-                world_pos = local_pos @ rot + loc
+            try:
+                pos, col, size, tex, pid = tracker.get_data(eval_obj, mesh)
+                if pos is not None:
+                    count = len(pos)
+                    current_frame_particles += count
 
-                mc_pos = np.empty_like(world_pos)
-                mc_pos[:, 0] = world_pos[:, 0] * self.props.scale
-                mc_pos[:, 1] = world_pos[:, 2] * self.props.scale
-                mc_pos[:, 2] = world_pos[:, 1] * self.props.scale
+                    # Transform to World & MC
+                    world_pos = pos
+                    if not tracker.is_world_space:
+                        mat_world = eval_obj.matrix_world
+                        # Apply matrix: (N,3) @ (3,3) + (3,)
+                        rot = np.array(mat_world.to_3x3()).T
+                        loc = np.array(mat_world.translation)
+                        world_pos = pos @ rot + loc
 
-                frame_pos.append(mc_pos)
-                frame_col.append(tracker.static_colors)
-                frame_size.append(
-                    np.full(count, int(self.props.particle_size * 100), dtype=np.uint16)
-                )
-                frame_tex.append(tracker.static_tex_ids)
-                frame_pid.append(np.arange(count, dtype=np.int32))
+                    mc_pos = np.empty_like(world_pos)
+                    mc_pos[:, 0] = world_pos[:, 0] * self.props.scale
+                    mc_pos[:, 1] = world_pos[:, 2] * self.props.scale
+                    mc_pos[:, 2] = world_pos[:, 1] * self.props.scale
 
-            eval_obj.to_mesh_clear()
+                    frame_pos.append(mc_pos)
+
+                    # Colors
+                    if col is None:
+                        col = np.full((count, 4), 255, dtype=np.uint8)
+                    frame_col.append(col)
+
+                    # Sizes
+                    if size is None:
+                        # Use default user setting
+                        size_arr = np.full(
+                            count, int(self.props.particle_size * 100), dtype=np.uint16
+                        )
+                    else:
+                        # Use raw size * 100 logic (Standard NBL unit assumption)
+                        size_arr = (size * 100).astype(np.uint16)
+                    frame_size.append(size_arr)
+
+                    frame_tex.append(tex)
+                    frame_pid.append(pid)
+
+            finally:
+                if mesh:
+                    eval_obj.to_mesh_clear()
 
         if frame_pos:
             self._writer.write_frame(
@@ -202,7 +243,7 @@ class NEBULA_OT_ExportFast(Operator):
         self.props.export_progress = progress * 100.0
         self.props.export_message = (
             f"[{self.current_frame}/{self.end_frame}] {current_frame_particles}"
-            + bpy.app.translations.pgettext(" 粒子")
+            + bpy.app.translations.pgettext(" Particles")
         )
 
     def cancel(self, context):
@@ -211,8 +252,8 @@ class NEBULA_OT_ExportFast(Operator):
         context.window_manager.event_timer_remove(self._timer)
         context.window_manager.progress_end()
         self.props.is_exporting = False
-        self.props.export_message = "已取消"
-        self.report({"WARNING"}, "导出已取消")
+        self.props.export_message = bpy.app.translations.pgettext("Cancelled")
+        self.report({"WARNING"}, bpy.app.translations.pgettext("Export Cancelled"))
         print("\n导出已取消")
 
     def finish(self, context):
@@ -222,6 +263,6 @@ class NEBULA_OT_ExportFast(Operator):
         context.window_manager.progress_end()
         self.props.is_exporting = False
         self.props.export_progress = 100.0
-        self.props.export_message = "完成!"
-        self.report({"INFO"}, "极速导出完成！")
+        self.props.export_message = bpy.app.translations.pgettext("Finished!")
+        self.report({"INFO"}, bpy.app.translations.pgettext("Fast Export Finished!"))
         print("\n导出完成！")

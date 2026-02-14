@@ -60,6 +60,8 @@
     "gui.nebula.config.culling_behavior.pause_and_hide": "完全暂停",
     "gui.nebula.config.emissive_strength": "发光强度",
     "gui.nebula.config.emissive_strength.desc": "控制粒子的发光强度。值越高，粒子越亮。",
+    "gui.nebula.config.sync_singleplayer": "单人模式动画同步",
+    "gui.nebula.config.sync_singleplayer.desc": "测试用选项，不建议开启。\n\n在单人游戏中也进行动画文件同步检查。通常情况下单人模式不需要同步，因为客户端和服务端使用相同的文件。",
     "command.nebula.client.reload.success": "动画重载成功！",
     "command.nebula.client.reload.failed": "动画重载失败。详情请查看日志。"
 }

@@ -3,6 +3,7 @@ package com.atemukesu.nebula.client;
 import com.atemukesu.nebula.client.command.NebulaToolsCommand;
 import com.atemukesu.nebula.Nebula;
 import com.atemukesu.nebula.client.enums.BlendMode;
+import com.atemukesu.nebula.client.gui.screen.NblSyncScreen;
 import com.atemukesu.nebula.client.loader.ClientAnimationLoader;
 import com.atemukesu.nebula.client.render.GpuParticleRenderer;
 import com.atemukesu.nebula.client.config.ConfigManager;
@@ -10,7 +11,6 @@ import com.atemukesu.nebula.client.config.ModConfig;
 import com.atemukesu.nebula.networking.ModPackets;
 import com.atemukesu.nebula.client.gui.DebugHud;
 import net.fabricmc.api.ClientModInitializer;
-import net.minecraft.util.math.Vec3d;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
@@ -18,6 +18,10 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.text.Text;
+
+import java.util.Map;
 
 public class NebulaClient implements ClientModInitializer {
     @Override
@@ -85,9 +89,9 @@ public class NebulaClient implements ClientModInitializer {
 
         ClientPlayNetworking.registerGlobalReceiver(ModPackets.SYNC_DATA,
                 (client, handler, buf, responseSender) -> {
-                    // Thoroughly stop hash comparison in singleplayer
-                    if (client.isInSingleplayer()) {
-                        Nebula.LOGGER.info("Singleplayer mode detected, skipping animation sync.");
+                    // 根据配置决定是否在单人模式下跳过同步
+                    if (client.isInSingleplayer() && !ModConfig.getInstance().getSyncSingleplayerAnimations()) {
+                        Nebula.LOGGER.info("Singleplayer mode detected and sync disabled in config, skipping animation sync.");
                         return;
                     }
                     int count = buf.readInt();
@@ -98,8 +102,8 @@ public class NebulaClient implements ClientModInitializer {
                         hashes.put(name, hash);
                     }
                     client.execute(() -> {
-                        if (client.currentScreen instanceof com.atemukesu.nebula.client.gui.screen.NblSyncScreen) {
-                            ((com.atemukesu.nebula.client.gui.screen.NblSyncScreen) client.currentScreen)
+                        if (client.currentScreen instanceof NblSyncScreen) {
+                            ((NblSyncScreen) client.currentScreen)
                                     .setServerHashes(hashes);
                         } else {
                             pendingSyncHashes = hashes;
@@ -137,21 +141,23 @@ public class NebulaClient implements ClientModInitializer {
                     Nebula.LOGGER.error("Asynchronous animation reload failed from packet", ex);
                 })));
 
+        // TODO: 1.20.1 SYNC
         // 4. Sync Data
         ClientPlayNetworking.registerGlobalReceiver(ModPackets.SyncDataPayload.ID, (payload, context) -> {
-            if (context.client().isInSingleplayer()) {
-                Nebula.LOGGER.info("Singleplayer mode detected, skipping animation sync.");
+            // 根据配置决定是否在单人模式下跳过同步
+            if (context.client().isInSingleplayer() && !ModConfig.getInstance().getSyncSingleplayerAnimations()) {
+                Nebula.LOGGER.info("Singleplayer mode detected and sync disabled in config, skipping animation sync.");
                 return;
             }
             // 数据读取逻辑现在在 Payload 类内部完成，这里直接拿结果
             java.util.Map<String, String> hashes = payload.hashes();
-            context.client().execute(() -> {
-                if (context.client().currentScreen instanceof com.atemukesu.nebula.client.gui.screen.NblSyncScreen syncScreen) {
-                    syncScreen.setServerHashes(hashes);
-                } else {
-                    pendingSyncHashes = hashes;
-                }
-            });
+            if (context.client().player != null) { // 存在玩家
+                openSyncScreenIfNecessary(context.client(), hashes);
+            } else { //不存在玩家
+                pendingSyncHashes = hashes;
+                Nebula.LOGGER.info("Received sync data during login, queued for JOIN event.");
+            }
+
         });
         //? }
 
@@ -162,23 +168,38 @@ public class NebulaClient implements ClientModInitializer {
                 GpuParticleRenderer.preloadOIT(w, h);
                 Nebula.LOGGER.info("OIT preloaded on world join.");
             }
-            // Open Sync Screen if not singleplayer
-            if (!client.isInSingleplayer()) {
-                client.execute(() -> {
-                    com.atemukesu.nebula.client.gui.screen.NblSyncScreen screen = new com.atemukesu.nebula.client.gui.screen.NblSyncScreen(
-                            net.minecraft.text.Text.translatable("nebula.sync.title"));
-                    if (pendingSyncHashes != null) {
-                        screen.setServerHashes(pendingSyncHashes);
-                        pendingSyncHashes = null;
-                    }
-                    client.setScreen(screen);
-                });
-            } else {
-                Nebula.LOGGER.info("Singleplayer server detected, skipping animation sync.");
+            if (pendingSyncHashes != null) {
+                openSyncScreenIfNecessary(client, pendingSyncHashes);
+                pendingSyncHashes = null;
             }
         });
 
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> pendingSyncHashes = null);
+    }
+
+    /**
+     * 根据配置和当前状态决定是否弹出同步界面
+     */
+    private void openSyncScreenIfNecessary(MinecraftClient client, Map<String, String> hashes) {
+        // 1. 检查配置：如果是单人模式且关闭了同步，则直接跳过
+        if (client.isInSingleplayer() && !ModConfig.getInstance().getSyncSingleplayerAnimations()) {
+            Nebula.LOGGER.info("Singleplayer detected and sync disabled, skipping UI.");
+            return;
+        }
+
+        // 2. 执行弹窗（确保在渲染线程执行）
+        client.execute(() -> {
+            // 如果当前已经是同步界面，则直接更新数据，不重新打开（防止界面闪烁）
+            if (client.currentScreen instanceof NblSyncScreen syncScreen) {
+                syncScreen.setServerHashes(hashes);
+            } else {
+                // 否则，打开新的同步界面
+                NblSyncScreen newScreen = new NblSyncScreen(
+                        Text.translatable("nebula.sync.title"));
+                newScreen.setServerHashes(hashes);
+                client.setScreen(newScreen);
+            }
+        });
     }
 
     private static java.util.Map<String, String> pendingSyncHashes = null;

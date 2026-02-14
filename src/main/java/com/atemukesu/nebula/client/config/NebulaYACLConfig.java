@@ -59,6 +59,15 @@ public class NebulaYACLConfig {
                                                                                 config::setShowCharts)
                                                                 .controller(BooleanControllerBuilder::create)
                                                                 .build())
+                                                .option(Option.<Boolean>createBuilder()
+                                                                .name(Text.translatable(
+                                                                                "gui.nebula.config.sync_singleplayer"))
+                                                                .description(OptionDescription.of(Text.translatable(
+                                                                                                "gui.nebula.config.sync_singleplayer.desc")))
+                                                                .binding(false, config::getSyncSingleplayerAnimations,
+                                                                                config::setSyncSingleplayerAnimations)
+                                                                .controller(BooleanControllerBuilder::create)
+                                                                .build())
                                                 .build())
                                 .category(ConfigCategory.createBuilder()
                                                 .name(Text.translatable("gui.nebula.config.category.rendering"))

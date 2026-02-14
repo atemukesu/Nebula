@@ -7,12 +7,10 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.suggestion.Suggestions;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
-import net.fabricmc.fabric.api.networking.v1.PacketByteBufs;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 
 import net.minecraft.command.CommandSource;
 import net.minecraft.command.argument.Vec3ArgumentType;
-import net.minecraft.network.PacketByteBuf;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
@@ -51,21 +49,20 @@ public class NebulaCommand {
                                                 .executes(context -> {
                                                         AnimationLoader.discoverAnimations();
                                                         ServerAnimationSyncer.reload(); // Reload server hashes
-                                                        ServerAnimationSyncer
-                                                                        .sendToAll(context.getSource().getServer()); // Sync
-                                                                                                                     // to
-                                                                                                                     // all
-                                                                                                                     // players
-
-                                                    for (ServerPlayerEntity player : context.getSource().getServer().getPlayerManager().getPlayerList()) {
-                                                        //? if < 1.21 {
                                                         
-                                                        /*ServerPlayNetworking.send(player, ModPackets.RELOAD_CLIENT_S2C, PacketByteBufs.empty());
+                                                        // 发送同步数据到所有玩家（包括单人模式）
+                                                        ServerAnimationSyncer.sendToAll(context.getSource().getServer());
                                                         
-                                                        *///? } else {
-                                                        ServerPlayNetworking.send(player, new ModPackets.ReloadClientPayload());
-                                                        //? }
-                                                    }
+                                                        // 向所有玩家发送重载通知
+                                                        for (ServerPlayerEntity player : context.getSource().getServer().getPlayerManager().getPlayerList()) {
+                                                            //? if < 1.21 {
+                                                            
+                                                            /*ServerPlayNetworking.send(player, ModPackets.RELOAD_CLIENT_S2C, PacketByteBufs.empty());
+                                                            
+                                                            *///? } else {
+                                                            ServerPlayNetworking.send(player, new ModPackets.ReloadClientPayload());
+                                                            //? }
+                                                        }
 
                                                     context.getSource().sendFeedback(
                                                             () -> Text.translatable(

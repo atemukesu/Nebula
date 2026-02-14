@@ -221,11 +221,13 @@ public class NblSyncScreen extends Screen {
 
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+        // 保存当前渲染状态
         //? if >=1.21 {
         this.renderInGameBackground(context);
         //? } else {
          /*this.renderBackground(context);
         *///? }
+        
         int centerX = this.width / 2;
         int currentY = 15;
 

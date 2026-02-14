@@ -60,6 +60,8 @@
     "gui.nebula.config.culling_behavior.pause_and_hide": "Fully Pause",
     "gui.nebula.config.emissive_strength": "Emissive Strength",
     "gui.nebula.config.emissive_strength.desc": "Controls the emissive strength of particles. Higher values make particles glow brighter.",
+    "gui.nebula.config.sync_singleplayer": "Singleplayer Animation Sync",
+    "gui.nebula.config.sync_singleplayer.desc": "Test option, not recommended to enable.\n\nPerform animation file synchronization checks even in singleplayer games. Normally singleplayer mode doesn't need synchronization since client and server use the same files.",
     "command.nebula.client.reload.success": "Animations reloaded successfully!",
     "command.nebula.client.reload.failed": "Failed to reload animations. See log for details."
 }

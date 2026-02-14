@@ -4,10 +4,8 @@ import com.atemukesu.nebula.Nebula;
 import com.atemukesu.nebula.networking.ModPackets;
 import com.atemukesu.nebula.particle.loader.AnimationLoader;
 import com.atemukesu.nebula.util.NebulaHashUtils;
-import net.fabricmc.fabric.api.networking.v1.PacketByteBufs;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 
-import net.minecraft.network.PacketByteBuf;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
 
@@ -43,8 +41,6 @@ public class ServerAnimationSyncer {
 
     //? if >=1.21 {
     public static void sendToPlayer(ServerPlayerEntity player) {
-        if (player.getServer() != null && player.getServer().isSingleplayer())
-            return;
         // Ensure we have hashes
         if (serverHashes.isEmpty()) {
             reload();
@@ -54,8 +50,6 @@ public class ServerAnimationSyncer {
     //? } else {
     
     /*public static void sendToPlayer(ServerPlayerEntity player) {
-        if (player.getServer() != null && player.getServer().isSingleplayer())
-            return;
 
         // Ensure we have hashes
         if (serverHashes.isEmpty()) {
@@ -75,9 +69,7 @@ public class ServerAnimationSyncer {
     *///? }
 
     public static void sendToAll(MinecraftServer server) {
-        if (server.isSingleplayer())
-            return;
-
+        // 即使在单人模式下也要发送同步包，因为客户端可能启用了单人模式同步
         for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
             sendToPlayer(player);
         }

@@ -6,6 +6,7 @@ import com.atemukesu.nebula.particle.loader.AnimationLoader;
 import com.atemukesu.nebula.util.NebulaHashUtils;
 import net.fabricmc.fabric.api.networking.v1.PacketByteBufs;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+
 import net.minecraft.network.PacketByteBuf;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
@@ -40,7 +41,19 @@ public class ServerAnimationSyncer {
         Nebula.LOGGER.info("Server hashes ready. Count: {}", serverHashes.size());
     }
 
+    //? if >=1.21 {
     public static void sendToPlayer(ServerPlayerEntity player) {
+        if (player.getServer() != null && player.getServer().isSingleplayer())
+            return;
+        // Ensure we have hashes
+        if (serverHashes.isEmpty()) {
+            reload();
+        }
+        ServerPlayNetworking.send(player, new ModPackets.SyncDataPayload(serverHashes));
+    }
+    //? } else {
+    
+    /*public static void sendToPlayer(ServerPlayerEntity player) {
         if (player.getServer() != null && player.getServer().isSingleplayer())
             return;
 
@@ -58,14 +71,12 @@ public class ServerAnimationSyncer {
 
         ServerPlayNetworking.send(player, ModPackets.SYNC_DATA, buf);
     }
+    
+    *///? }
 
     public static void sendToAll(MinecraftServer server) {
         if (server.isSingleplayer())
             return;
-
-        // Ensure hashes are fresh/loaded? reload() should have been called by caller if
-        // needed.
-        // But sendToPlayer checks emptiness.
 
         for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
             sendToPlayer(player);

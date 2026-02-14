@@ -1,46 +1,45 @@
 {
-	"schemaVersion": 1,
-	"id": "nebula",
-	"version": "${version}",
-	"name": "nebula",
-	"description": "A particle mod powered by a high-performance GPU-instanced rendering engine and optimized NBL streaming for fluid, large-scale animations.",
-	"authors": [
-		"atemukesu"
-	],
-	"contact": {
-		"homepage": "https://atemukesu.github.io",
-		"sources": "https://github.com/atemukesu/nebula",
-		"issues": "https://github.com/atemukesu/nebula/issues"
-	},
-	"license": "MIT",
-	"icon": "assets/nebula/icon.png",
-	"environment": "*",
-	"entrypoints": {
-		"main": [
-			"com.atemukesu.nebula.Nebula"
-		],
-		"client": [
-			"com.atemukesu.nebula.NebulaClient"
-		],
-		"modmenu": [
-			"com.atemukesu.nebula.client.gui.ModMenuIntegration"
-		]
-	},
-	"mixins": [
-		"nebula.mixins.json",
-		{
-			"config": "nebula.client.mixins.json",
-			"environment": "client"
-		}
-	],
-	"depends": {
-		"fabricloader": ">=0.17.2",
-		"minecraft": "~1.20.1",
-		"java": ">=17",
-		"fabric-api": "*",
-		"modmenu": "*",
-		"threatengl": "*",
-		"yet_another_config_lib_v3": ">=3.5.0+1.20.1-fabric"
-	},
-	"suggests": {}
+  "schemaVersion": 1,
+  "id": "${id}",
+  "version": "${version}",
+  "name": "${name}",
+  "description": "A particle mod powered by a high-performance GPU-instanced rendering engine and optimized NBL streaming for fluid, large-scale animations.",
+  "authors": [
+    "atemukesu"
+  ],
+  "contact": {
+    "homepage": "https://atemukesu.github.io",
+    "sources": "https://github.com/atemukesu/nebula",
+    "issues": "https://github.com/atemukesu/nebula/issues"
+  },
+  "license": "GPL v3",
+  "icon": "assets/nebula/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.atemukesu.nebula.Nebula"
+    ],
+    "client": [
+      "com.atemukesu.nebula.client.NebulaClient"
+    ],
+    "modmenu": [
+      "com.atemukesu.nebula.client.gui.ModMenuIntegration"
+    ]
+  },
+  "mixins": [
+    "nebula.mixins.json",
+    {
+      "config": "nebula.client.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=0.17",
+    "minecraft": "${minecraft}",
+    "java": ">=17",
+    "fabric-api": "*",
+    "modmenu": "*",
+    "threatengl": "*",
+    "yet_another_config_lib_v3": "*"
+  }
 }

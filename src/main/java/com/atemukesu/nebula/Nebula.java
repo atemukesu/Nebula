@@ -43,6 +43,7 @@ public class Nebula implements ModInitializer {
 
 		// 注册网络包
 		ModPackets.registerC2SPackets();
+        ModPackets.registerCommon();
 
 		// 注册服务端事件
 		net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.SERVER_STARTING.register(server -> {
@@ -70,7 +71,6 @@ public class Nebula implements ModInitializer {
 			LOGGER.error("Failed to find animations resource path");
 			return;
 		}
-
 		try {
 			if (!Files.exists(targetDir)) {
 				Files.createDirectories(targetDir);

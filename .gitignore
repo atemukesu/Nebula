@@ -1,68 +1,40 @@
-# =================================================================
-#  Build output & Distribution files
-# =================================================================
-build/
+# gradle
+
 .gradle/
+build/
 out/
 classes/
-bin/
 
-# Ignore final compiled mod jars
-*.jar
-!/gradle/wrapper/gradle-wrapper.jar
+# eclipse
 
+*.launch
 
-# =================================================================
-#  IDE files
-# =================================================================
-# IntelliJ IDEA
+# idea
+
 .idea/
 *.iml
 *.ipr
 *.iws
 
-# Eclipse
+# vscode
+
+.settings/
+.vscode/
+bin/
 .classpath
 .project
-.settings/
-*.launch
 
-# VSCode
-.vscode/
+# macos
 
+*.DS_Store
 
-# =================================================================
-#  Fabric & Minecraft Development
-# =================================================================
-# Fabric Loom's run directories for testing
+# fabric
+
 run/
 
-# Fabric Loom cache
-.fabric/
+# java
 
-# User-specific JVM arguments
-user_jvm_args.txt
-
-# Minecraft logs from the run directory
-logs/
-debug.log
-
-
-# =================================================================
-#  OS & System specific files
-# =================================================================
-# macOS
-.DS_Store
-
-# Windows thumbnail cache
-Thumbs.db
-
-
-# =================================================================
-#  Java crash logs & dumps
-# =================================================================
 hs_err_*.log
 replay_*.log
 *.hprof
 *.jfr
-patch.md

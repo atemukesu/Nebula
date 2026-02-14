@@ -9,6 +9,7 @@ import com.mojang.brigadier.suggestion.Suggestions;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import net.fabricmc.fabric.api.networking.v1.PacketByteBufs;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+
 import net.minecraft.command.CommandSource;
 import net.minecraft.command.argument.Vec3ArgumentType;
 import net.minecraft.network.PacketByteBuf;
@@ -56,21 +57,22 @@ public class NebulaCommand {
                                                                                                                      // all
                                                                                                                      // players
 
-                                                        // 向所有客户端发送重载包
-                                                        for (ServerPlayerEntity player : context.getSource().getServer()
-                                                                        .getPlayerManager()
-                                                                        .getPlayerList()) {
-                                                                ServerPlayNetworking.send(player,
-                                                                                ModPackets.RELOAD_CLIENT_S2C,
-                                                                                PacketByteBufs.empty());
-                                                        }
+                                                    for (ServerPlayerEntity player : context.getSource().getServer().getPlayerManager().getPlayerList()) {
+                                                        //? if < 1.21 {
+                                                        
+                                                        /*ServerPlayNetworking.send(player, ModPackets.RELOAD_CLIENT_S2C, PacketByteBufs.empty());
+                                                        
+                                                        *///? } else {
+                                                        ServerPlayNetworking.send(player, new ModPackets.ReloadClientPayload());
+                                                        //? }
+                                                    }
 
-                                                        context.getSource().sendFeedback(
-                                                                        () -> Text.translatable(
+                                                    context.getSource().sendFeedback(
+                                                            () -> Text.translatable(
                                                                                         "command.nebula.reload.success")
-                                                                                        .formatted(Formatting.GREEN),
-                                                                        true);
-                                                        return 1;
+                                                                    .formatted(Formatting.GREEN),
+                                                            true);
+                                                    return 1;
                                                 }))
 
                                 .then(literal("get_hash")
@@ -100,13 +102,15 @@ public class NebulaCommand {
                                 .then(literal("clear")
                                                 .executes(context -> {
                                                         // 向所有玩家发送清除数据包
-                                                        for (ServerPlayerEntity player : context.getSource().getServer()
-                                                                        .getPlayerManager()
-                                                                        .getPlayerList()) {
-                                                                ServerPlayNetworking.send(player,
-                                                                                ModPackets.CLEAR_ANIMATIONS_S2C,
-                                                                                PacketByteBufs.empty());
-                                                        }
+                                                    for (ServerPlayerEntity player : context.getSource().getServer().getPlayerManager().getPlayerList()) {
+                                                        //? if < 1.21 {
+                                                        
+                                                        /*ServerPlayNetworking.send(player, ModPackets.CLEAR_ANIMATIONS_S2C, PacketByteBufs.empty());
+                                                        
+                                                        *///? } else {
+                                                        ServerPlayNetworking.send(player, new ModPackets.ClearAnimationsPayload());
+                                                        //? }
+                                                    }
                                                         context.getSource().sendFeedback(
                                                                         () -> Text.translatable(
                                                                                         "command.nebula.clear.success")
@@ -116,27 +120,38 @@ public class NebulaCommand {
                                                 })));
         }
 
-        private static int executePlay(ServerCommandSource source, String animationName, Vec3d position) {
-                if (!AnimationLoader.getAnimations().containsKey(animationName)) {
-                        source.sendError(Text.translatable("command.nebula.play.not_found", animationName)
-                                        .formatted(Formatting.RED));
-                        return 0;
-                }
-
-                PacketByteBuf buf = PacketByteBufs.create();
-                buf.writeString(animationName);
-                buf.writeDouble(position.x);
-                buf.writeDouble(position.y);
-                buf.writeDouble(position.z);
-
-                for (ServerPlayerEntity player : source.getServer().getPlayerManager().getPlayerList()) {
-                        ServerPlayNetworking.send(player, ModPackets.PLAY_ANIMATION_S2C, new PacketByteBuf(buf.copy()));
-                }
-
-                source.sendFeedback(() -> Text.translatable("command.nebula.play.success", animationName)
-                                .formatted(Formatting.GREEN), true);
-                return 1;
+    private static int executePlay(ServerCommandSource source, String animationName, Vec3d position) {
+        if (!AnimationLoader.getAnimations().containsKey(animationName)) {
+            source.sendError(Text.translatable("command.nebula.play.not_found", animationName)
+                    .formatted(Formatting.RED));
+            return 0;
         }
+
+        //? if < 1.21 {
+        
+        /*PacketByteBuf buf = PacketByteBufs.create();
+        buf.writeString(animationName);
+        buf.writeDouble(position.x);
+        buf.writeDouble(position.y);
+        buf.writeDouble(position.z);
+
+        for (ServerPlayerEntity player : source.getServer().getPlayerManager().getPlayerList()) {
+            ServerPlayNetworking.send(player, ModPackets.PLAY_ANIMATION_S2C, new PacketByteBuf(buf.copy()));
+        }
+        
+        *///? } else {
+        // 1.21 写法：创建一个 Payload 对象，然后发给所有人
+        ModPackets.PlayAnimationPayload payload = new ModPackets.PlayAnimationPayload(animationName, position);
+
+        for (ServerPlayerEntity player : source.getServer().getPlayerManager().getPlayerList()) {
+            ServerPlayNetworking.send(player, payload);
+        }
+        //? }
+
+        source.sendFeedback(() -> Text.translatable("command.nebula.play.success", animationName)
+                .formatted(Formatting.GREEN), true);
+        return 1;
+    }
 
         private static CompletableFuture<Suggestions> getAnimationSuggestions(
                         CommandContext<ServerCommandSource> context,

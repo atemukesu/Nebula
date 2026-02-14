@@ -1,5 +1,5 @@
 i18n_dict = {
-    "zh_CN": {
+    "zh_HANS": {
         ("*", "Material Name"): "材质名",
         ("*", "NBL Texture Path"): "NBL 纹理路径",
         ("*", "Target Collection"): "目标集合",
@@ -19,7 +19,7 @@ i18n_dict = {
         ("*", "NebulaFX Stats & Material Check"): "NebulaFX 统计 & 材质检查",
         ("*", "Export NBL"): "导出 NBL",
         ("*", "zstandard required"): "需安装 zstandard",
-        ("*", "Preparing for export..."): "准备导出...",
+        ("*", "Preparing for export..."): "正在准备导出...",
         ("*", "Export Progress"): "导出进度",
         ("*", "Cancelled"): "已取消",
         ("*", "Export Cancelled"): "导出已取消",
@@ -31,12 +31,19 @@ i18n_dict = {
         ("*", "Default (White)"): "默认 (白色)",
         ("*", "Base Color"): "基础颜色",
         ("*", "Active Node"): "活动节点",
+        ("*", "Node Tree Scan"): "节点树扫描",
+        ("*", "Active Image Node"): "选中的图像节点",
         ("*", "First Image Node"): "首个图像节点",
         ("*", "Mat:"): "材质:",
         ("*", "Data Source"): "数据源",
         ("*", "Mesh Scatter"): "网格撒点",
         ("*", "Particle System"): "粒子系统",
         ("*", "Point Cloud"): "点云",
+        ("*", "No triangles found."): "未找到三角形。",
+        ("*", "Total area is <= 0"): "总面积 <= 0",
+        ("*", "Count too low, forcing 1 particle."): "数量过低，强制生成1个粒子。",
+        ("*", "Count too low, valid=False."): "数量过低，跳过。",
+        ("*", "Generating particles"): "正在生成粒子",
     },
     "ja_JP": {
         ("*", "Material Name"): "マテリアル名",
@@ -76,5 +83,15 @@ i18n_dict = {
         ("*", "Mesh Scatter"): "メッシュ散布",
         ("*", "Particle System"): "パーティクルシステム",
         ("*", "Point Cloud"): "ポイントクラウド",
+        ("*", "Node Tree Scan"): "ノードツリースキャン",
+        ("*", "Active Image Node"): "選択中の画像ノード",
+        ("*", "No triangles found."): "三角形が見つかりません。",
+        ("*", "Total area is <= 0"): "総面積が0以下です",
+        (
+            "*",
+            "Count too low, forcing 1 particle.",
+        ): "数が少なすぎるため、強制的に1つのパーティクルを生成します。",
+        ("*", "Count too low, valid=False."): "数が少なすぎるため、スキップします。",
+        ("*", "Generating particles"): "パーティクルを生成中",
     },
 }

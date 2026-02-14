@@ -216,16 +216,27 @@ class NEBULA_OT_ExportFast(Operator):
                     eval_obj.to_mesh_clear()
 
         if frame_pos:
+            # Seq ID currently all 0 for now (future feature)
+            all_pos = np.vstack(frame_pos)
+            count = len(all_pos)
+            all_seq = np.zeros(count, dtype=np.uint8)
+
             self._writer.write_frame(
-                np.vstack(frame_pos),
+                all_pos,
                 np.vstack(frame_col),
                 np.concatenate(frame_size),
                 np.concatenate(frame_tex),
+                all_seq,
                 np.concatenate(frame_pid),
             )
         else:
             self._writer.write_frame(
-                np.array([]), np.array([]), np.array([]), np.array([]), np.array([])
+                np.array([]),
+                np.array([]),
+                np.array([]),
+                np.array([]),
+                np.array([]),
+                np.array([]),
             )
 
         # Progress update

@@ -62,7 +62,10 @@ class MeshScatterTracker(BaseTracker):
 
         tri_count = len(loop_tris)
         if tri_count == 0:
-            print(f"[Nebula] {self.name}: No triangles found.")
+            print(
+                f"[Nebula] {self.name}: "
+                + bpy.app.translations.pgettext("No triangles found.")
+            )
             self.valid = False
             return
 
@@ -81,7 +84,11 @@ class MeshScatterTracker(BaseTracker):
         total_area = np.sum(areas)
 
         if total_area <= 0:
-            print(f"[Nebula] {self.name}: Total area is <= 0 ({total_area}).")
+            print(
+                f"[Nebula] {self.name}: "
+                + bpy.app.translations.pgettext("Total area is <= 0")
+                + f" ({total_area})."
+            )
             self.valid = False
             return
 
@@ -97,18 +104,26 @@ class MeshScatterTracker(BaseTracker):
                 raw_count > 0.001
             ):  # Threshold to force at least 1 particle for small meshes
                 print(
-                    f"[Nebula] {self.name}: Count {target_count} too low (Raw={raw_count:.4f}). Forcing 1 particle."
+                    f"[Nebula] {self.name}: "
+                    + bpy.app.translations.pgettext(
+                        "Count too low, forcing 1 particle."
+                    )
+                    + f" ({target_count}, Raw={raw_count:.4f})"
                 )
                 target_count = 1
             else:
                 print(
-                    f"[Nebula] {self.name}: Count {target_count} too low (Raw={raw_count:.4f}). Valid=False."
+                    f"[Nebula] {self.name}: "
+                    + bpy.app.translations.pgettext("Count too low, valid=False.")
+                    + f" ({target_count}, Raw={raw_count:.4f})"
                 )
                 self.valid = False
                 return
         else:
             print(
-                f"[Nebula] {self.name}: Generating {target_count} particles (Area={total_area:.4f}, Density={density})"
+                f"[Nebula] {self.name}: "
+                + bpy.app.translations.pgettext("Generating particles")
+                + f": {target_count} (Area={total_area:.4f}, Density={density})"
             )
 
         probs = areas / total_area

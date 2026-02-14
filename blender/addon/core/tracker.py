@@ -166,22 +166,74 @@ class MeshScatterTracker(BaseTracker):
             target_img = None
             found_method = "Default (White)"
 
-            if mat.use_nodes:
-                bsdf = next(
-                    (n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"),
+            # Helper to find image node recursively
+            def find_image_node(node, depth=0):
+                if depth > 5:
+                    return None
+                if node.type == "TEX_IMAGE":
+                    return node
+
+                # Check inputs
+                for input in node.inputs:
+                    if input.is_linked:
+                        link = input.links[0]
+                        res = find_image_node(link.from_node, depth + 1)
+                        if res:
+                            return res
+                return None
+
+            if mat.use_nodes and mat.node_tree:
+                # 1. Try common shader inputs
+                # Principled BSDF -> Base Color
+                # Emission -> Color
+                # Diffuse BSDF -> Color
+                # Background -> Color
+                # Toon shaders often use "MainTex" or similar, but we can't guess names easily.
+                # Just look for shader nodes.
+
+                targets = []
+                for node in mat.node_tree.nodes:
+                    if node.type == "BSDF_PRINCIPLED":
+                        targets.append(node.inputs.get("Base Color"))
+                    elif node.type == "EMISSION":
+                        targets.append(node.inputs.get("Color"))
+                    elif node.type == "BSDF_DIFFUSE":
+                        targets.append(node.inputs.get("Color"))
+                    elif node.type in ["BSDF_TOON", "BSDF_HAIR_PRINCIPLED"]:
+                        # Try first input usually color
+                        if len(node.inputs) > 0:
+                            targets.append(node.inputs[0])
+
+                # Also check Output node inputs if no shader found or custom group
+                output_node = next(
+                    (n for n in mat.node_tree.nodes if n.type == "OUTPUT_MATERIAL"),
                     None,
                 )
-                if bsdf and bsdf.inputs["Base Color"].is_linked:
-                    link_node = bsdf.inputs["Base Color"].links[0].from_node
-                    if link_node.type == "TEX_IMAGE":
-                        target_img = link_node.image
-                        found_method = "Base Color"
+                if output_node:
+                    targets.append(output_node.inputs.get("Surface"))
 
+                for input_socket in targets:
+                    if input_socket and input_socket.is_linked:
+                        # Walk up
+                        img_node = find_image_node(input_socket.links[0].from_node)
+                        if img_node:
+                            target_img = img_node.image
+                            found_method = "Node Tree Scan"
+                            break
+
+                # 2. Fallback: Search for ANY Image Texture node with an image
                 if not target_img:
-                    nodes = mat.node_tree.nodes
-                    if nodes.active and nodes.active.type == "TEX_IMAGE":
-                        target_img = nodes.active.image
-                        found_method = "Active Node"
+                    for node in mat.node_tree.nodes:
+                        if node.type == "TEX_IMAGE" and node.image:
+                            # Prefer one that is selected/active
+                            if node == mat.node_tree.nodes.active:
+                                target_img = node.image
+                                found_method = "Active Image Node"
+                                break
+                            # Or just take the first one found
+                            if not target_img:
+                                target_img = node.image
+                                found_method = "First Image Node"
 
             if report_fn:
                 img_name = target_img.name if target_img else "None"

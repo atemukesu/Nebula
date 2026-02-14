@@ -1,7 +1,6 @@
 import bpy
 import numpy as np
 from bpy.types import Operator
-from mathutils import Vector
 from ..core.tracker import MeshScatterTracker, NativeParticleTracker, PointCloudTracker
 
 

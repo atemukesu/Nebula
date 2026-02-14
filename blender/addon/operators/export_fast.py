@@ -9,7 +9,7 @@ from ..utils.dependencies import HAS_ZSTD
 
 class NEBULA_OT_ExportFast(Operator):
     bl_idname = "nebula.export_nbl"
-    bl_label = "Export NBL"
+    bl_label = bpy.app.translations.pgettext("Export NBL")
 
     _timer = None
     _writer = None

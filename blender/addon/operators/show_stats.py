@@ -6,7 +6,7 @@ from ..core.tracker import MeshScatterTracker, NativeParticleTracker, PointCloud
 
 class NEBULA_OT_ShowStats(Operator):
     bl_idname = "nebula.show_stats"
-    bl_label = "View Estimated Statistics"
+    bl_label = bpy.app.translations.pgettext("View Estimated Statistics")
 
     def execute(self, context):
         props = context.scene.nebula_props

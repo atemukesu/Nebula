@@ -2,7 +2,7 @@ import bpy
 import numpy as np
 from bpy.types import Operator
 from mathutils import Vector
-from ..core.tracker import ParticleTracker
+from ..core.tracker import MeshScatterTracker, NativeParticleTracker, PointCloudTracker
 
 
 class NEBULA_OT_ShowStats(Operator):
@@ -21,10 +21,9 @@ class NEBULA_OT_ShowStats(Operator):
             )
             return {"CANCELLED"}
 
-        # 1. 准备 Dummy Cache 用于检测贴图 (不实际读取像素，只为跑通逻辑)
+        # 1. Dummy Cache
         dummy_cache = {}
         for img in bpy.data.images:
-            # 使用 1x1 的像素数据模拟
             dummy_cache[img.name] = (np.zeros((1, 1, 4), dtype=np.float32), 1, 1)
 
         total_particles = 0
@@ -35,43 +34,74 @@ class NEBULA_OT_ShowStats(Operator):
         reported_mats = set()
 
         def collect_report(msg):
-            # 去重：同名材质只报一次
             if msg not in reported_mats:
                 texture_reports.append(msg)
                 reported_mats.add(msg)
 
-        # 临时计算第一帧
+        # Prepare trackers based on current selection
+        trackers = []
+
+        mat_map = {item.material_name: i for i, item in enumerate(props.texture_list)}
+
         for obj in target_col.all_objects:
-            if obj.type == "MESH" and obj.visible_get():
-                eval_obj = obj.evaluated_get(depsgraph)
-                mesh = eval_obj.to_mesh()
+            if not obj.visible_get():
+                continue
+            eval_obj = obj.evaluated_get(depsgraph)
 
-                # 模拟 Tracker 计算
-                tracker = ParticleTracker()
-                if tracker.precompute_distribution(mesh, props.sampling_density):
-                    count = len(tracker.tri_indices)
-                    total_particles += count
+            # P3 Mesh Scatter
+            if obj.type == "MESH" and props.use_mesh_scatter:
+                t = MeshScatterTracker("mesh")
+                trackers.append((eval_obj, t, True))  # True = needs Mesh
 
-                    # 运行颜色烘焙逻辑来检测贴图
-                    tracker.bake_colors(mesh.materials, dummy_cache, collect_report)
+            # P1 Particles
+            if props.use_particle_system and len(obj.particle_systems) > 0:
+                for psys in obj.particle_systems:
+                    t = NativeParticleTracker("psys", psys.name)
+                    trackers.append((eval_obj, t, False))
 
-                    # 估算 BBox (基于 Object BBox 变换)
-                    bbox = np.array([v[:] for v in eval_obj.bound_box])
-                    mat = eval_obj.matrix_world
+            # P2 Point Cloud
+            if obj.type == "POINTCLOUD" and props.use_point_cloud:
+                t = PointCloudTracker("pcl")
+                trackers.append((eval_obj, t, False))
 
-                    # 变换 BBox 到世界坐标
-                    world_bbox = np.array([mat @ Vector(v) for v in bbox])
+        # Run Estimation
+        for eval_obj, tracker, needs_mesh in trackers:
+            mesh = eval_obj.to_mesh() if needs_mesh else None
+            try:
+                # Prepare (Calculate Distribution)
+                tracker.prepare(eval_obj, props, mat_map, dummy_cache, collect_report)
 
-                    # 转换到 MC 坐标系并缩放
-                    mc_bbox = np.zeros_like(world_bbox)
-                    mc_bbox[:, 0] = world_bbox[:, 0] * props.scale
-                    mc_bbox[:, 1] = world_bbox[:, 2] * props.scale  # YZ 翻转
-                    mc_bbox[:, 2] = world_bbox[:, 1] * props.scale
+                if tracker.valid:
+                    # Get Data for one frame (Current Frame)
+                    pos, _, _, _, _ = tracker.get_data(eval_obj, mesh)
 
-                    min_pos = np.minimum(min_pos, mc_bbox.min(axis=0))
-                    max_pos = np.maximum(max_pos, mc_bbox.max(axis=0))
+                    if pos is not None:
+                        count = len(pos)
+                        total_particles += count
 
-                eval_obj.to_mesh_clear()
+                        # Calculate BBox for this batch
+                        if count > 0:
+                            # Transform
+                            world_pos = pos
+                            if not tracker.is_world_space:
+                                mat_world = eval_obj.matrix_world
+                                rot = np.array(mat_world.to_3x3()).T
+                                loc = np.array(mat_world.translation)
+                                world_pos = pos @ rot + loc
+
+                            mc_pos = np.empty_like(world_pos)
+                            mc_pos[:, 0] = world_pos[:, 0] * props.scale
+                            mc_pos[:, 1] = world_pos[:, 2] * props.scale
+                            mc_pos[:, 2] = world_pos[:, 1] * props.scale
+
+                            min_pos = np.minimum(min_pos, mc_pos.min(axis=0))
+                            max_pos = np.maximum(max_pos, mc_pos.max(axis=0))
+
+            except Exception as e:
+                print(f"Stats Error: {e}")
+            finally:
+                if mesh:
+                    eval_obj.to_mesh_clear()
 
         if total_particles == 0:
             self.report(
@@ -83,6 +113,9 @@ class NEBULA_OT_ShowStats(Operator):
             return {"CANCELLED"}
 
         dims = max_pos - min_pos
+        # Handle case where min_pos is still inf
+        if np.isinf(dims).any():
+            dims = np.zeros(3)
 
         def show_msg(self, context):
             layout = self.layout
@@ -96,8 +129,9 @@ class NEBULA_OT_ShowStats(Operator):
             )
             layout.separator()
             layout.label(text=bpy.app.translations.pgettext("Material Check Report:"))
+            if not texture_reports:
+                layout.label(text="No texture issues found", icon="CHECKMARK")
             for msg in texture_reports:
-                # 简单的颜色区分
                 if "Default" in msg:
                     layout.label(text=msg, icon="ERROR")
                 else:

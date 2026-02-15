@@ -39,6 +39,8 @@ Nebula 使用专为流式传输设计的自定义 `.nbl` 二进制格式：
 * **SoA 布局：** 数据在内存中采用 **数组结构体（Structure of Arrays）** 布局，最大化 CPU 缓存命中率。
 * **I/P 帧结构：** 类似视频编码；利用关键帧（I-Frames）和预测帧（P-Frames）大幅减小文件大小。
 
+了解 nbl 格式，请查看[此处](/docs/nbl格式文档.md)。
+
 ##  安装与使用
 
 ### 前置要求
@@ -61,6 +63,8 @@ Nebula 使用专为流式传输设计的自定义 `.nbl` 二进制格式：
 /nebula play <动画名称> [起点_x] [起点_y] [起点_z]
 ```
 
+## 感谢
+* 感谢 [MadParticle](https://github.com/USS-Shenzhou/MadParticle) 本项目受其启发，并参考了部分实现。
 
 ## 贡献
 

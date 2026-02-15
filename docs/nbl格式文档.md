@@ -92,11 +92,11 @@ struct TextureEntry {
 
 **解压后的数据结构** (Total Size = 5 + PayloadSize):
 
-| 偏移 (Offset) | 字段名 | 类型 | 描述 |
-| --- | --- | --- | --- |
-| 0x00 | `FrameType` | `uint8` | **0 = I-Frame**; **1 = P-Frame** |
-| 0x01 | `ParticleCount` | `uint32` | 当前帧粒子数 (N) |
-| 0x05 | `Payload` | `bytes` | 数据体 (根据 FrameType 解析) |
+| 偏移 (Offset) | 字段名             | 类型       | 描述                               |
+|-------------|-----------------|----------|----------------------------------|
+| 0x00        | `FrameType`     | `uint8`  | **0 = I-Frame**; **1 = P-Frame** |
+| 0x01        | `ParticleCount` | `uint32` | 当前帧粒子数 (N)                       |
+| 0x05        | `Payload`       | `bytes`  | 数据体 (根据 FrameType 解析)            |
 
 ---
 
@@ -108,24 +108,10 @@ struct TextureEntry {
 **物理内存布局 (Memory Layout):**
 所有数组依次首尾相连。读取时需根据 `N` 计算偏移量。
 
-| 顺序 | 数据块名称 | 数据类型 | 字节长度 | 详细内存排布 (必须严格遵守) |
-| --- | --- | --- | --- | --- |
-| 1 | `PosArrays` | `float32` | `3 * N * 4` | **非交错存储 (Non-interleaved):**<br>
-
-<br>1. 先存 `N` 个 X 坐标 (`float32` x N)<br>
-
-<br>2. 再存 `N` 个 Y 坐标 (`float32` x N)<br>
-
-<br>3. 再存 `N` 个 Z 坐标 (`float32` x N) |
-| 2 | `ColArrays` | `uint8` | `4 * N * 1` | **非交错存储:**<br>
-
-<br>1. `N` 个 R 分量 (`uint8` x N)<br>
-
-<br>2. `N` 个 G 分量<br>
-
-<br>3. `N` 个 B 分量<br>
-
-<br>4. `N` 个 A 分量 |
+| 顺序 | 数据块名称       | 数据类型      | 字节长度        | 详细内存排布 (必须严格遵守)                  |
+|----|-------------|-----------|-------------|----------------------------------|
+| 1  | `PosArrays` | `float32` | `3 * N * 4` | **非交错存储 (Non-interleaved):**<br>1. 先存 `N` 个 X 坐标 (`float32` x N)<br>2. 再存 `N` 个 Y 坐标 (`float32` x N)<br>3. 再存 `N` 个 Z 坐标 (`float32` x N) |
+| 2 | `ColArrays` | `uint8` | `4 * N * 1` | **非交错存储:**<br>1. `N` 个 R 分量 (`uint8` x N)<br>2. `N` 个 G 分量<br>3. `N` 个 B 分量<br>4. `N` 个 A 分量 |
 | 3 | `Sizes` | `uint16` | `N * 2` | `N` 个大小值紧密排列 |
 | 4 | `TextureIDs` | `uint8` | `N * 1` | `N` 个贴图 ID |
 | 5 | `SeqIndices` | `uint8` | `N * 1` | `N` 个序列帧索引 |
@@ -146,20 +132,10 @@ struct TextureEntry {
 *仅当 `FrameType == 1` 时使用。*
 *同样遵循 SoA 布局，顺序与 I-Frame 逻辑一致。*
 
-| 顺序 | 数据块名称 | 数据类型 | 字节长度 | 详细内存排布 |
-| --- | --- | --- | --- | --- |
-| 1 | `PosDeltas` | `int16` | `3 * N * 2` | 1. `N` 个 dX (`int16`)<br>
-
-<br>2. `N` 个 dY<br>
-
-<br>3. `N` 个 dZ |
-| 2 | `ColDeltas` | `int8` | `4 * N * 1` | 1. `N` 个 dR (`int8`)<br>
-
-<br>2. `N` 个 dG<br>
-
-<br>3. `N` 个 dB<br>
-
-<br>4. `N` 个 dA |
+| 顺序 | 数据块名称       | 数据类型    | 字节长度        | 详细内存排布                    |
+|----|-------------|---------|-------------|---------------------------|
+| 1  | `PosDeltas` | `int16` | `3 * N * 2` | 1. `N` 个 dX (`int16`)<br>2. `N` 个 dY<br>3. `N` 个 dZ |
+| 2 | `ColDeltas` | `int8` | `4 * N * 1` | 1. `N` 个 dR (`int8`)<br>2. `N` 个 dG<br>3. `N` 个 dB<br>4. `N` 个 dA |
 | 3 | `SizeDeltas` | `int16` | `N * 2` | `N` 个 dSize |
 | 4 | `TexIDDeltas` | `int8` | `N * 1` | `N` 个 dTexID |
 | 5 | `SeqDeltas` | `int8` | `N * 1` | `N` 个 dSeq |

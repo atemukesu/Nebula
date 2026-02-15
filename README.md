@@ -39,6 +39,8 @@ Nebula uses a custom `.nbl` binary format specifically engineered for streaming:
 * **SoA Layout:** Data is organized in memory using a **Structure of Arrays** layout to maximize CPU cache hit rates.
 * **I/P Frame Structure:** Similar to video encoding; utilizes Keyframes (I-Frames) and Predicted Frames (P-Frames) to drastically reduce file size.
 
+For more information about the nbl format, please click [here](/docs/nbl_format_en.md).
+
 ##  Installation & Usage
 
 ### Prerequisites
@@ -62,6 +64,8 @@ You can use this command to play NBL Animations.
 /nebula play <animation_name> [origin_x] [origin_y] [origin_z]
 ```
 
+## Thanks
+* [MadParticle](https://github.com/USS-Shenzhou/MadParticle) for the inspiration and reference implementation.
 
 ## Contributing
 

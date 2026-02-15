@@ -8,6 +8,7 @@ import com.atemukesu.nebula.client.loader.ClientAnimationLoader;
 import com.atemukesu.nebula.client.render.GpuParticleRenderer;
 import com.atemukesu.nebula.client.config.ConfigManager;
 import com.atemukesu.nebula.client.config.ModConfig;
+import com.atemukesu.nebula.client.util.CurrentTimeUtil;
 import com.atemukesu.nebula.networking.ModPackets;
 import com.atemukesu.nebula.client.gui.DebugHud;
 import net.fabricmc.api.ClientModInitializer;
@@ -20,6 +21,9 @@ import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.text.Text;
+//? if < 1.21 {
+/*import net.minecraft.util.math.Vec3d;
+*///? }
 
 import java.util.Map;
 
@@ -57,7 +61,7 @@ public class NebulaClient implements ClientModInitializer {
     @SuppressWarnings("resource")
     private void registerS2CPackets() {
         //? if < 1.21 {
-        
+
         /*ClientPlayNetworking.registerGlobalReceiver(ModPackets.PLAY_ANIMATION_S2C,
                 (client, handler, buf, responseSender) -> {
                     String animationName = buf.readString();
@@ -69,26 +73,45 @@ public class NebulaClient implements ClientModInitializer {
                 (client, handler, buf, responseSender) -> client.execute(() -> ClientAnimationManager.getInstance().clearAllInstances()));
 
         ClientPlayNetworking.registerGlobalReceiver(ModPackets.RELOAD_CLIENT_S2C,
-                (client, handler, buf, responseSender) -> client.execute(() -> ClientAnimationLoader.loadAnimationsAsync(
-                        () -> { // Success
-                            if (client.player != null) {
-                                client.player.sendMessage(net.minecraft.text.Text
-                                        .translatable("command.nebula.client.reload.success")
-                                        .formatted(net.minecraft.util.Formatting.GREEN), false);
-                            }
-                        },
-                        (ex) -> { // Failure
-                            if (client.player != null) {
-                                client.player.sendMessage(net.minecraft.text.Text
-                                        .translatable("command.nebula.client.reload.failed")
-                                        .formatted(net.minecraft.util.Formatting.RED), false);
-                            }
-                            Nebula.LOGGER.error("Asynchronous animation reload failed from packet",
-                                    ex);
-                        })));
+                (client, handler, buf, responseSender) -> client.execute(
+                        () -> {
+                            isReloading = true;
+                            ClientAnimationLoader.loadAnimationsAsync(
+                                    () -> { // Success
+                                        client.execute(() -> {
+                                            isReloading = false;
+                                            if (client.player != null) {
+                                                client.player.sendMessage(net.minecraft.text.Text
+                                                        .translatable("command.nebula.client.reload.success")
+                                                        .formatted(net.minecraft.util.Formatting.GREEN), false);
+                                            }
+                                            if (pendingSyncHashes != null) {
+                                                Nebula.LOGGER.info("Reload finished, processing queued sync data...");
+                                                openSyncScreenIfNecessary(client, pendingSyncHashes);
+                                                pendingSyncHashes = null; // 清空队列
+                                            }
+                                        });
+                                    },
+                                    (ex) -> { // Failure
+                                        client.execute(() -> {
+                                            isReloading = false;
+                                            if (client.player != null) {
+                                                client.player.sendMessage(net.minecraft.text.Text
+                                                        .translatable("command.nebula.client.reload.failed")
+                                                        .formatted(net.minecraft.util.Formatting.RED), false);
+                                            }
+                                            Nebula.LOGGER.error("Asynchronous animation reload failed from packet",
+                                                    ex);
+                                        });
+                                    });
+                        }));
+
 
         ClientPlayNetworking.registerGlobalReceiver(ModPackets.SYNC_DATA,
                 (client, handler, buf, responseSender) -> {
+                    if (CurrentTimeUtil.isInReplay()) {
+                        return;
+                    }
                     // 根据配置决定是否在单人模式下跳过同步
                     if (client.isInSingleplayer() && !ModConfig.getInstance().getSyncSingleplayerAnimations()) {
                         Nebula.LOGGER.info("Singleplayer mode detected and sync disabled in config, skipping animation sync.");
@@ -102,15 +125,20 @@ public class NebulaClient implements ClientModInitializer {
                         hashes.put(name, hash);
                     }
                     client.execute(() -> {
-                        if (client.currentScreen instanceof NblSyncScreen) {
-                            ((NblSyncScreen) client.currentScreen)
-                                    .setServerHashes(hashes);
+                        if (NebulaClient.isReloading) {
+                            pendingSyncHashes = hashes;
+                            return;
+                        }
+                        if (client.player != null) {
+                            // 一切正常，打开界面
+                            openSyncScreenIfNecessary(client, hashes);
                         } else {
+                            // 玩家还没进服（登录中），存起来等 JOIN 事件
                             pendingSyncHashes = hashes;
                         }
                     });
                 });
-        
+
         *///? } else {
         // 1.21+ Payload
         // 1. Play Animation
@@ -124,39 +152,60 @@ public class NebulaClient implements ClientModInitializer {
         ));
 
         // 3. Reload Client
-        ClientPlayNetworking.registerGlobalReceiver(ModPackets.ReloadClientPayload.ID, (payload, context) -> context.client().execute(() -> ClientAnimationLoader.loadAnimationsAsync(
-                () -> { // Success
-                    if (context.player() != null) {
-                        context.player().sendMessage(net.minecraft.text.Text
-                                .translatable("command.nebula.client.reload.success")
-                                .formatted(net.minecraft.util.Formatting.GREEN), false);
-                    }
-                },
-                (ex) -> { // Failure
-                    if (context.player() != null) {
-                        context.player().sendMessage(net.minecraft.text.Text
-                                .translatable("command.nebula.client.reload.failed")
-                                .formatted(net.minecraft.util.Formatting.RED), false);
-                    }
-                    Nebula.LOGGER.error("Asynchronous animation reload failed from packet", ex);
-                })));
+        ClientPlayNetworking.registerGlobalReceiver(ModPackets.ReloadClientPayload.ID, (payload, context) ->
+                context.client().execute(() -> {
+                    isReloading = true;
+                    ClientAnimationLoader.loadAnimationsAsync(
+                            () -> { // Success
+                                isReloading = false;
+                                if (context.player() != null) {
+                                    context.player().sendMessage(net.minecraft.text.Text
+                                            .translatable("command.nebula.client.reload.success")
+                                            .formatted(net.minecraft.util.Formatting.GREEN), false);
+                                }
+                                if (pendingSyncHashes != null) {
+                                    Nebula.LOGGER.info("Reload finished, processing queued sync data...");
+                                    openSyncScreenIfNecessary(context.client(), pendingSyncHashes);
+                                    pendingSyncHashes = null; // 清空队列
+                                }
+                            },
+                            (ex) -> { // Failure
+                                isReloading = false;
+                                if (context.player() != null) {
+                                    context.player().sendMessage(net.minecraft.text.Text
+                                            .translatable("command.nebula.client.reload.failed")
+                                            .formatted(net.minecraft.util.Formatting.RED), false);
+                                }
+                                Nebula.LOGGER.error("Asynchronous animation reload failed from packet", ex);
+                            });
+                }));
 
-        // TODO: 1.20.1 SYNC
         // 4. Sync Data
         ClientPlayNetworking.registerGlobalReceiver(ModPackets.SyncDataPayload.ID, (payload, context) -> {
+            // 检测到 Replay 环境直接跳过同步
+            if (CurrentTimeUtil.isInReplay()) {
+                return;
+            }
             // 根据配置决定是否在单人模式下跳过同步
             if (context.client().isInSingleplayer() && !ModConfig.getInstance().getSyncSingleplayerAnimations()) {
                 Nebula.LOGGER.info("Singleplayer mode detected and sync disabled in config, skipping animation sync.");
                 return;
             }
-            // 数据读取逻辑现在在 Payload 类内部完成，这里直接拿结果
             java.util.Map<String, String> hashes = payload.hashes();
-            if (context.client().player != null) { // 存在玩家
-                openSyncScreenIfNecessary(context.client(), hashes);
-            } else { //不存在玩家
-                pendingSyncHashes = hashes;
-                Nebula.LOGGER.info("Received sync data during login, queued for JOIN event.");
-            }
+
+            context.client().execute(() -> {
+                if (NebulaClient.isReloading) {
+                    Nebula.LOGGER.info("Client is reloading, queuing sync data until finished.");
+                    pendingSyncHashes = hashes;
+                    return;
+                }
+                if (context.client().player != null) {
+                    openSyncScreenIfNecessary(context.client(), hashes);
+                } else {
+                    pendingSyncHashes = hashes;
+                    Nebula.LOGGER.info("Received sync data during login, queued for JOIN event.");
+                }
+            });
 
         });
         //? }
@@ -181,6 +230,12 @@ public class NebulaClient implements ClientModInitializer {
      * 根据配置和当前状态决定是否弹出同步界面
      */
     private void openSyncScreenIfNecessary(MinecraftClient client, Map<String, String> hashes) {
+
+        if (CurrentTimeUtil.isInReplay()) {
+            Nebula.LOGGER.info("Replay Mod detected, suppressing sync screen.");
+            return;
+        }
+
         // 1. 检查配置：如果是单人模式且关闭了同步，则直接跳过
         if (client.isInSingleplayer() && !ModConfig.getInstance().getSyncSingleplayerAnimations()) {
             Nebula.LOGGER.info("Singleplayer detected and sync disabled, skipping UI.");
@@ -203,4 +258,9 @@ public class NebulaClient implements ClientModInitializer {
     }
 
     private static java.util.Map<String, String> pendingSyncHashes = null;
+
+    /**
+     * 标记是否正在重载
+     */
+    public static boolean isReloading = false;
 }

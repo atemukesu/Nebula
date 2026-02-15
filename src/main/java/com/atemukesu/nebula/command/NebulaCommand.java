@@ -23,6 +23,11 @@ import java.util.concurrent.CompletableFuture;
 import static net.minecraft.server.command.CommandManager.argument;
 import static net.minecraft.server.command.CommandManager.literal;
 
+//? if < 1.21 {
+/*import net.minecraft.network.PacketByteBuf;
+import net.fabricmc.fabric.api.networking.v1.PacketByteBufs;
+*///? }
+
 public class NebulaCommand {
         public static void register(CommandDispatcher<ServerCommandSource> dispatcher) {
                 dispatcher.register(literal("nebula")

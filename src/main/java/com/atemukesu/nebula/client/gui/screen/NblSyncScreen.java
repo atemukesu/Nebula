@@ -38,6 +38,9 @@ public class NblSyncScreen extends Screen {
     private boolean showOnlyErrors = false;
     private ButtonWidget closeButton;
 
+    private long autoCloseStartTime = -1;
+    private static final long AUTO_CLOSE_DELAY = 3000;
+
     public NblSyncScreen(Text title) {
         super(title);
     }
@@ -61,9 +64,12 @@ public class NblSyncScreen extends Screen {
         // 日志列表组件
         int logTop = 110;
         int logBottom = this.height - 60;
+        int listWidth = this.width - 40;
+        int listX = (this.width - listWidth) / 2;
         this.logListWidget = new LogListWidget(this.client, this.width - 40, logBottom - logTop, logTop, logBottom, 12);
+        this.logListWidget.setX(listX);
         updateLogUI(); // 恢复日志
-        this.addSelectableChild(this.logListWidget);
+        this.addDrawableChild(this.logListWidget);
 
         // 底部按钮栏
         int totalWidth = buttonWidth * 3 + spacing * 2;
@@ -76,8 +82,8 @@ public class NblSyncScreen extends Screen {
 
         // 复制日志按钮
         this.addDrawableChild(ButtonWidget.builder(
-                Text.translatable("nebula.sync.copy_log"),
-                button -> copyLogsToClipboard())
+                        Text.translatable("nebula.sync.copy_log"),
+                        button -> copyLogsToClipboard())
                 .dimensions(startX + buttonWidth + spacing, buttonY, buttonWidth, buttonHeight).build());
 
         // 过滤按钮
@@ -157,6 +163,7 @@ public class NblSyncScreen extends Screen {
                 addLog(Text.translatable("nebula.sync.log.sync_aborted"), LogLevel.WARNING);
             } else if (failureCount.get() == 0) {
                 addLog(Text.translatable("nebula.sync.log.all_success"), LogLevel.SUCCESS);
+                autoCloseStartTime = System.currentTimeMillis();
             } else {
                 addLog(Text.translatable("nebula.sync.log.complete_with_errors", failureCount.get()), LogLevel.ERROR);
             }
@@ -221,13 +228,30 @@ public class NblSyncScreen extends Screen {
 
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+        if (autoCloseStartTime != -1) {
+            long elapsed = System.currentTimeMillis() - autoCloseStartTime;
+            if (elapsed >= AUTO_CLOSE_DELAY) {
+                this.close();
+                return; // 停止渲染，直接返回
+            }
+            if (this.closeButton != null) {
+                long remainingMs = AUTO_CLOSE_DELAY - elapsed;
+                double remainingSeconds = Math.max(0, remainingMs) / 1000.0;
+                String timeStr = String.format("%.3f", remainingSeconds);
+                this.closeButton.setMessage(Text.translatable("nebula.sync.close")
+                        .append(" (" + timeStr + "s)"));
+            }
+        }
         // 保存当前渲染状态
         //? if >=1.21 {
         this.renderInGameBackground(context);
-        //? } else {
-         /*this.renderBackground(context);
+         //? } else {
+        /*this.renderBackground(context);
         *///? }
-        
+
+
+        super.render(context, mouseX, mouseY, delta);
+
         int centerX = this.width / 2;
         int currentY = 15;
 
@@ -289,10 +313,6 @@ public class NblSyncScreen extends Screen {
                 .formatted(Formatting.UNDERLINE);
         context.drawCenteredTextWithShadow(this.textRenderer, logTitle, centerX, currentY, 0xFFFFFF);
 
-        // 渲染日志列表
-        this.logListWidget.render(context, mouseX, mouseY, delta);
-
-        super.render(context, mouseX, mouseY, delta);
     }
 
     @Override
@@ -352,10 +372,11 @@ public class NblSyncScreen extends Screen {
         }
 
         public LogListWidget(MinecraftClient client, int width, int height, int top, int bottom, int itemHeight) {
-            //? if >=1.21 {
+            //? if >= 1.21 {
             super(client, width, height, top, itemHeight);
-            //? } else {
-             /*super(client, width, height, top, bottom, itemHeight);
+             //? } else {
+            /*super(client, width, height, top, bottom, itemHeight);
+            this.setRenderBackground(false); // 不绘制背景
             *///? }
         }
 
@@ -385,16 +406,38 @@ public class NblSyncScreen extends Screen {
             return this.width - 20;
         }
 
-        //? if >=1.21 {
+        //? if < 1.21 {
+
+        /*/^*
+         * 设置 X 坐标 (1.20.1)
+         * @param x X 坐标
+         ^/
+        public void setX(int x) {
+            this.left = x;
+            this.right = x + this.width;
+        }
+        *///? }
+
+        //? if >= 1.21 {
+        
+        @Override
+        protected void drawMenuListBackground(DrawContext context) {
+            // 不要绘制背景
+        }
+        
+        //? }
+
+        //? if >= 1.21 {
         @Override
         protected int getScrollbarX() {
             return this.width - 6;
         }
         //? } else {
-         /*@Override
+        /*@Override
         protected int getScrollbarPositionX() {
             return this.width - 6;
-        } 
+        }
+
         *///? }
         // 日志条目
         public static class LogEntry extends AlwaysSelectedEntryListWidget.Entry<LogEntry> {
@@ -410,7 +453,7 @@ public class NblSyncScreen extends Screen {
 
             @Override
             public void render(DrawContext context, int index, int y, int x, int entryWidth, int entryHeight,
-                    int mouseX, int mouseY, boolean hovered, float tickDelta) {
+                               int mouseX, int mouseY, boolean hovered, float tickDelta) {
                 String prefix = level.getPrefix();
                 Text displayText = Text.literal(prefix + " ").append(text);
 

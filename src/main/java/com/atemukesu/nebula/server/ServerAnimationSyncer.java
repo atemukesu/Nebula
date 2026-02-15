@@ -14,6 +14,11 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
+//? if < 1.21 {
+/*import net.minecraft.network.PacketByteBuf;
+import net.fabricmc.fabric.api.networking.v1.PacketByteBufs;
+*///? }
+
 public class ServerAnimationSyncer {
     private static final Map<String, String> serverHashes = new HashMap<>();
 

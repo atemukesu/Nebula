@@ -36,7 +36,7 @@
   "depends": {
     "fabricloader": ">=0.17",
     "minecraft": "${minecraft}",
-    "java": ">=17",
+    "java": ">=21",
     "fabric-api": "*",
     "modmenu": "*",
     "threatengl": "*",

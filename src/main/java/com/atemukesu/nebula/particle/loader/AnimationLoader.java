@@ -68,19 +68,22 @@ public class AnimationLoader {
             Nebula.LOGGER.warn("Animations directory does not exist: {}", animationsDir);
             return;
         }
+        
+        Nebula.LOGGER.info("Starting animation discovery in: {}", animationsDir.toAbsolutePath());
 
         try (Stream<Path> stream = Files.walk(animationsDir)) {
             stream.filter(Files::isRegularFile)
                     .filter(p -> p.toString().endsWith(".nbl"))
                     .forEach(path -> {
                         // 计算相对于动画目录的相对路径作为动画名称
-                        String relativePath = animationsDir.relativize(path).toString();
-                        // 移除 .nbl 扩展名
-                        String name = relativePath.substring(0, relativePath.lastIndexOf('.'));
+                        Path relativePath = animationsDir.relativize(path);
+                        // 转换为字符串并移除 .nbl 扩展名
+                        String name = relativePath.toString();
+                        name = name.substring(0, name.lastIndexOf('.'));
                         // 统一使用正斜杠作为路径分隔符
                         name = name.replace('\\', '/');
                         animations.put(name, path);
-                        Nebula.LOGGER.info("Discovered animation: {}", name);
+                        Nebula.LOGGER.info("Discovered animation: {} -> {}", name, path.toAbsolutePath());
                     });
         } catch (IOException e) {
             Nebula.LOGGER.error("Failed to discover animations", e);

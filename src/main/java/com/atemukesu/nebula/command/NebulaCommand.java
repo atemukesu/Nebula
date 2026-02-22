@@ -72,7 +72,7 @@ public class NebulaCommand {
                                 .requires(source -> source.hasPermissionLevel(2))
 
                                 .then(literal("play")
-                                                .then(argument("animation", StringArgumentType.word())
+                                                .then(argument("animation", StringArgumentType.string())  // String 参数
                                                                 .suggests(NebulaCommand::getAnimationSuggestions)
                                                                 .then(argument("position", Vec3ArgumentType.vec3(true))
                                                                                 .executes(context -> executePlay(
@@ -116,7 +116,7 @@ public class NebulaCommand {
                                                 }))
 
                                 .then(literal("get_hash")
-                                                .then(argument("animation", StringArgumentType.word())
+                                                .then(argument("animation", StringArgumentType.string()) // String 参数
                                                                 .suggests(NebulaCommand::getAnimationSuggestions)
                                                                 .executes(context -> {
                                                                         String name = StringArgumentType.getString(

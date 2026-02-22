@@ -45,7 +45,6 @@ import net.minecraft.client.MinecraftClient;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -109,21 +108,7 @@ public class ClientAnimationLoader {
                     return null;
                 })
                 .whenComplete((res, err) -> {
-                    // 不在这里关闭 executor，因为流式加载需要它
                 });
     }
 
-    /**
-     * 获取指定动画的文件路径
-     */
-    public static Path getAnimationPath(String name) {
-        return AnimationLoader.getAnimationPath(name);
-    }
-
-    /**
-     * 获取所有已发现的动画
-     */
-    public static Map<String, Path> getAnimations() {
-        return AnimationLoader.getAnimations();
-    }
 }

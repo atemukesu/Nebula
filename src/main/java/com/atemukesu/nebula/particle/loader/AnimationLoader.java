@@ -46,7 +46,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Consumer;
 
 import java.util.stream.Stream;
 
@@ -70,12 +69,16 @@ public class AnimationLoader {
             return;
         }
 
-        try (Stream<Path> stream = Files.walk(animationsDir, 2)) {
+        try (Stream<Path> stream = Files.walk(animationsDir)) {
             stream.filter(Files::isRegularFile)
                     .filter(p -> p.toString().endsWith(".nbl"))
                     .forEach(path -> {
-                        String name = path.getFileName().toString();
-                        name = name.substring(0, name.lastIndexOf('.'));
+                        // 计算相对于动画目录的相对路径作为动画名称
+                        String relativePath = animationsDir.relativize(path).toString();
+                        // 移除 .nbl 扩展名
+                        String name = relativePath.substring(0, relativePath.lastIndexOf('.'));
+                        // 统一使用正斜杠作为路径分隔符
+                        name = name.replace('\\', '/');
                         animations.put(name, path);
                         Nebula.LOGGER.info("Discovered animation: {}", name);
                     });
@@ -107,32 +110,10 @@ public class AnimationLoader {
     }
 
     /**
-     * 设置动画映射（用于客户端加载后更新）
-     */
-    public static void setAnimations(Map<String, ?> newAnimations) {
-        // 此方法由客户端加载器调用，暂不处理
-    }
-
-    /**
-     * 获取动画目录路径
-     */
-    public static Path getAnimationsDir() {
-        return animationsDir;
-    }
-
-    /**
      * 获取指定动画的文件路径
      */
     public static Path getAnimationPath(String name) {
         return animations.get(name);
     }
 
-    /**
-     * 加载单个动画文件（保留兼容性，实际使用流式加载）
-     */
-    public static Object loadAnimationFromFile(Path path, Consumer<Float> progressCallback) throws IOException {
-        // 流式加载不需要预加载整个文件
-        // 返回 null，实际加载由 NblStreamer 处理
-        return null;
-    }
 }

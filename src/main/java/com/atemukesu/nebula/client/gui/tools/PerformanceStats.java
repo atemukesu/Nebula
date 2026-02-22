@@ -112,10 +112,6 @@ public class PerformanceStats {
         }
     }
 
-    public boolean isEnabled() {
-        return enabled;
-    }
-
     private void initializeHistory() {
         if (historyInitialized)
             return;
@@ -255,14 +251,6 @@ public class PerformanceStats {
         this.isIrisMode = irisMode;
     }
 
-    public void setUploadTimeMs(double time) {
-        this.uploadTimeMs = time;
-    }
-
-    public void setDrawCallTimeMs(double time) {
-        this.drawCallTimeMs = time;
-    }
-
     public void setLastGlError(int error, String message) {
         this.lastGlError = error;
         this.lastGlErrorMessage = message;
@@ -324,14 +312,6 @@ public class PerformanceStats {
 
     public int getUsedBufferBytes() {
         return usedBufferBytes;
-    }
-
-    public boolean isPmbSupported() {
-        return pmbSupported;
-    }
-
-    public boolean isUsingFallback() {
-        return usingFallback;
     }
 
     public int getShaderProgram() {

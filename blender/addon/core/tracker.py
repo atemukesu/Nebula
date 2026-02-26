@@ -180,6 +180,7 @@ class MeshScatterTracker(BaseTracker):
 
             target_img = None
             found_method = "Default (White)"
+            fallback_color = [1.0, 1.0, 1.0, 1.0]
 
             # Helper to find image node recursively
             def find_image_node(node, depth=0):
@@ -199,13 +200,6 @@ class MeshScatterTracker(BaseTracker):
 
             if mat.use_nodes and mat.node_tree:
                 # 1. Try common shader inputs
-                # Principled BSDF -> Base Color
-                # Emission -> Color
-                # Diffuse BSDF -> Color
-                # Background -> Color
-                # Toon shaders often use "MainTex" or similar, but we can't guess names easily.
-                # Just look for shader nodes.
-
                 targets = []
                 for node in mat.node_tree.nodes:
                     if node.type == "BSDF_PRINCIPLED":
@@ -215,11 +209,10 @@ class MeshScatterTracker(BaseTracker):
                     elif node.type == "BSDF_DIFFUSE":
                         targets.append(node.inputs.get("Color"))
                     elif node.type in ["BSDF_TOON", "BSDF_HAIR_PRINCIPLED"]:
-                        # Try first input usually color
                         if len(node.inputs) > 0:
                             targets.append(node.inputs[0])
 
-                # Also check Output node inputs if no shader found or custom group
+                # Also check Output node inputs
                 output_node = next(
                     (n for n in mat.node_tree.nodes if n.type == "OUTPUT_MATERIAL"),
                     None,
@@ -227,28 +220,48 @@ class MeshScatterTracker(BaseTracker):
                 if output_node:
                     targets.append(output_node.inputs.get("Surface"))
 
+                found_fallback = False
                 for input_socket in targets:
-                    if input_socket and input_socket.is_linked:
-                        # Walk up
+                    if not input_socket:
+                        continue
+
+                    if input_socket.is_linked:
+                        # Walk up to find texture
                         img_node = find_image_node(input_socket.links[0].from_node)
                         if img_node:
                             target_img = img_node.image
                             found_method = "Node Tree Scan"
-                            break
+                            break  # Image takes precedence
+                    elif not found_fallback:
+                        # Use default value as fallback color if it's a color socket
+                        dv = getattr(input_socket, "default_value", None)
+                        if dv is not None and hasattr(dv, "__len__") and len(dv) >= 3:
+                            fallback_color = [
+                                float(dv[0]),
+                                float(dv[1]),
+                                float(dv[2]),
+                                1.0,
+                            ]
+                            if len(dv) >= 4:
+                                fallback_color[3] = float(dv[3])
+                            found_fallback = True
+                            found_method = "Base Color (Value)"
 
-                # 2. Fallback: Search for ANY Image Texture node with an image
+                # 2. Fallback: Search for ANY Image Texture node with an image if still none
                 if not target_img:
                     for node in mat.node_tree.nodes:
                         if node.type == "TEX_IMAGE" and node.image:
-                            # Prefer one that is selected/active
                             if node == mat.node_tree.nodes.active:
                                 target_img = node.image
                                 found_method = "Active Image Node"
                                 break
-                            # Or just take the first one found
                             if not target_img:
                                 target_img = node.image
                                 found_method = "First Image Node"
+            else:
+                # No nodes: use diffuse color
+                fallback_color = list(mat.diffuse_color)
+                found_method = "Diffuse Color"
 
             if report_fn:
                 img_name = target_img.name if target_img else "None"
@@ -260,9 +273,9 @@ class MeshScatterTracker(BaseTracker):
                 )
                 report_fn(msg)
 
+            mask = self.mat_indices == m_idx
             if target_img and target_img.name in image_cache:
                 pixels, w, h = image_cache[target_img.name]
-                mask = self.mat_indices == m_idx
                 sub_uvs = self.static_uvs[mask]
 
                 # Nearest Neighbor Sampling
@@ -274,6 +287,11 @@ class MeshScatterTracker(BaseTracker):
                 np.clip(y, 0, h - 1, out=y)
 
                 self.static_colors[mask] = (pixels[y, x] * 255).astype(np.uint8)
+            else:
+                # Use fallback color (Base Color value or diffuse color)
+                self.static_colors[mask] = (np.array(fallback_color[:4]) * 255).astype(
+                    np.uint8
+                )
 
     def _bake_tex_ids(self, materials, mat_map):
         count = len(self.tri_indices)

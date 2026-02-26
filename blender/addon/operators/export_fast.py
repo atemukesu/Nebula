@@ -109,7 +109,6 @@ class NEBULA_OT_ExportFast(Operator):
             scene.render.fps,
             self.end_frame - self.start_frame + 1,
             self.tex_paths,
-            self.props.scale,
         )
         self._writer.__enter__()  # Open file
 

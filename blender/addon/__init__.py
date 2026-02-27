@@ -7,7 +7,7 @@ from . import i18n
 bl_info = {
     "name": "NebulaFX NBL Exporter",
     "author": "Atemukesu",
-    "version": (1, 1, 1),
+    "version": (1, 2, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > NebulaFX",
     "description": "NBL Exporter: Export your Blender animation to nbl format by sampling.",

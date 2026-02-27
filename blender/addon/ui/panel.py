@@ -22,6 +22,7 @@ class NEBULA_PT_Panel(Panel):
         layout.prop(props, "filepath")
         layout.prop(props, "scale")
         layout.prop(props, "particle_size")
+        layout.prop(props, "keyframe_interval")
 
         layout.separator()
         layout.label(text=bpy.app.translations.pgettext("Data Source"))

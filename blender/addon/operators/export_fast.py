@@ -109,7 +109,9 @@ class NEBULA_OT_ExportFast(Operator):
             scene.render.fps,
             self.end_frame - self.start_frame + 1,
             self.tex_paths,
+            keyframe_interval=self.props.keyframe_interval,
         )
+
         self._writer.__enter__()  # Open file
 
         # 4. Start Modal

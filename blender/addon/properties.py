@@ -25,6 +25,12 @@ class NebulaProps(PropertyGroup):
     scale: FloatProperty(name="Scale", default=10.0)
     sampling_density: FloatProperty(name="Sampling Density", default=10.0)
     particle_size: FloatProperty(name="Size", default=0.15)
+    keyframe_interval: IntProperty(
+        name="Keyframe Interval",
+        description="Force-insert an I-frame every N frames",
+        default=60,
+        min=1,
+    )
 
     # Data Source Selection
     use_mesh_scatter: BoolProperty(name="Mesh Scatter", default=True)

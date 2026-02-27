@@ -366,7 +366,11 @@ public class GpuParticleRenderer {
         GL20.glUseProgram(oitProgram);
         RenderSystem.depthMask(false);
         RenderSystem.enableBlend();
-        RenderSystem.blendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
+
+        RenderSystem.blendFuncSeparate(
+                GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA,
+                GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
+        );
 
         GL13.glActiveTexture(GL13.GL_TEXTURE0);
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, oitFbo.getAccumTexture());
@@ -517,14 +521,13 @@ public class GpuParticleRenderer {
         RenderSystem.depthMask(true);
         RenderSystem.enableBlend();
 
-        // 显式重置 GL Blend Func，防止上一次 Batch 的 Pass 2 (OIT Blend) 状态残留。
-        // RenderSystem 可能会误以为状态未变而跳过指令，导致第二个 Batch 的不透明粒子
-        // 继承了 OIT 的混合模式 (Additive)，从而变成半透明/发亮。
-        GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
-        RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
+        // 核心修复：分离混合，保护主 FBO 的 Alpha 通道不被污染
+        RenderSystem.blendFuncSeparate(
+                GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA,
+                GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
+        );
 
         GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
-
         // ==========================================
         // Pass 2: 半透明粒子 (Translucent)
         // 目标: OIT FBO
@@ -764,12 +767,17 @@ public class GpuParticleRenderer {
 
         switch (blendMode) {
             case ADDITIVE:
-                RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE);
+                RenderSystem.blendFuncSeparate(
+                        GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE,
+                        GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
+                );
                 break;
             case ALPHA:
             default:
-                RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA,
-                        GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
+                RenderSystem.blendFuncSeparate(
+                        GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA,
+                        GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
+                );
                 break;
         }
 
@@ -922,24 +930,10 @@ public class GpuParticleRenderer {
             shaderProgram = -1;
         }
 
-        if (oitFbo != null) {
-            // oitFbo.delete(); // Commenting out until method verified
-        }
-
-        // ParticleTextureManager.cleanup(); // Removed
-
         initialized = false;
         shaderCompiled = false;
         pmbSupported = false;
         useFallback = false;
-    }
-
-    public static void shrinkBuffer() {
-        // PMB 模式下缩容需要重新创建缓冲区，开销较大
-        // 这里选择不自动缩容，保持当前大小
-        if (!RenderSystem.isOnRenderThread()) {
-            return;
-        }
     }
 
     private static String loadShaderSource(Identifier id) {

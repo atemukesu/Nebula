@@ -593,7 +593,6 @@ public class ClientAnimationManager {
         }
         currentInstanceCount = 0;
         currentParticleCount = 0;
-        GpuParticleRenderer.shrinkBuffer();
         Nebula.LOGGER.info("All animation instances cleared");
     }
 

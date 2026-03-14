@@ -197,8 +197,7 @@ build_version() {
     
     # 激活对应版本
     log_info "激活 Stonecutter 版本：$mc_version"
-    sed -i "s/^stonecutter active .*/stonecutter active \"$mc_version\"/" stonecutter.gradle.kts
-    
+
     # 清理之前的构建
     log_info "清理旧的构建文件..."
     ./gradlew clean --no-daemon

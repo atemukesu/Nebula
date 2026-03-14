@@ -41,3 +41,6 @@ replay_*.log
 
 # Enviroment Varibles
 .env
+
+# Blender Addons
+*.zip

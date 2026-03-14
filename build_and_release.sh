@@ -309,9 +309,10 @@ EOF
 - Java >=21
 - Mod Menu >=7.2.2
 - YACL >=3.5.0+1.20.1-fabric
+- ThreatenGL >=2.0.4 (光影和渲染支持)
 
 **可选依赖**:
-- Iris >=1.6.17+1.20.1 (光影支持)
+- Iris >=1.6.17+1.20.1 (备用光影支持)
 - ReplayMod >=1.20.1-2.6.23 (录像支持)
 
 ### Minecraft 1.21.1 版本
@@ -323,9 +324,10 @@ EOF
 - Java >=21
 - Mod Menu >=11.0.3
 - YACL >=3.8.1+1.21.1-fabric
+- ThreatenGL >=2.0.4 (光影和渲染支持)
 
 **可选依赖**:
-- Iris >=1.8.8+1.21.1-fabric (光影支持)
+- Iris >=1.8.8+1.21.1-fabric (备用光影支持)
 - ReplayMod >=1.21-2.6.23 (录像支持)
 
 ---
@@ -466,6 +468,9 @@ upload_to_modrinth() {
         
         log_info "上传 $mc_version 版本到 Modrinth..."
         
+        # 获取原始文件名
+        local real_filename=$(basename "$jar_file")
+        
         # 使用 jq 安全地构建 JSON 数据
         local version_name="${VERSION}-${mc_version}"
         local json_data=$(jq -n \
@@ -475,19 +480,38 @@ upload_to_modrinth() {
             --arg mc_version "${mc_version}" \
             --arg desc "Nebula ${VERSION} for Minecraft ${mc_version}" \
             --arg changelog "${changelog_content}" \
+            --arg filename "${real_filename}" \
             '{
                 name: $name,
                 version_number: $version,
                 version_type: "release",
                 project_id: $project_id,
-                file_parts: ["file"],
-                primary_file: "file",
+                file_parts: [$filename],
+                primary_file: $filename,
                 dependencies: [
                     {
                         version_id: null,
                         project_id: "P7dR8mSH",
                         file_name: null,
                         dependency_type: "required"
+                    },
+                    {
+                        version_id: null,
+                        project_id: "mOgUt4GM",
+                        file_name: null,
+                        dependency_type: "required"
+                    },
+                    {
+                        version_id: null,
+                        project_id: "1eAoo2KR",
+                        file_name: null,
+                        dependency_type: "required"
+                    },
+                    {
+                        version_id: null,
+                        project_id: "RSFrpoou",
+                        file_name: null,
+                        dependency_type: "optional"
                     }
                 ],
                 loaders: ["fabric"],
@@ -501,20 +525,13 @@ upload_to_modrinth() {
                 metadata: null
             }')
         
-        # 创建临时目录和文件
-        local temp_dir=$(mktemp -d)
-        cp "$jar_file" "${temp_dir}/file.jar"
-        
-        # 上传到 Modrinth API
+        # 上传到 Modrinth API (直接使用原始文件，不需要临时目录)
         log_info "发送请求到 Modrinth API..."
         local response=$(curl -s -X POST \
             -H "Authorization: ${MODRINTH_TOKEN}" \
             -F "data=${json_data};type=application/json" \
-            -F "file=@${temp_dir}/file.jar" \
+            -F "${real_filename}=@${jar_file}" \
             "https://api.modrinth.com/v2/version" 2>/dev/null)
-        
-        # 清理临时文件
-        rm -rf "$temp_dir"
         
         # 检查响应
         if echo "$response" | grep -q '"id"'; then

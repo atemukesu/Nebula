@@ -157,7 +157,8 @@ collect_changelog_input() {
     
     local updates=()
     while true; do
-        read -p "> " line
+        # 加上 -e 参数，开启 readline 支持，完美解决中文输入法兼容问题
+        read -e -p "> " line
         if [ -z "$line" ]; then
             break
         fi

@@ -413,145 +413,103 @@ upload_to_github() {
     log_success "成功上传到 GitHub Releases"
     log_info "Release 链接：https://github.com/${GITHUB_REPOSITORY}/releases/tag/${release_tag}"
 }
-
 # --------------------------- 上传到 Modrinth -------------------------------
 upload_to_modrinth() {
     if [ -z "$MODRINTH_TOKEN" ]; then
         log_warning "缺少 MODRINTH_TOKEN，跳过 Modrinth 上传"
         return
     fi
-    
+
     log_info "=========================================="
     log_info "开始上传到 Modrinth"
     log_info "=========================================="
-    
-    # 检查 jq 是否安装
-    if ! command -v jq &> /dev/null; then
-        log_error "jq 未安装，无法构建合法的 JSON 数据"
-        log_info "请安装 jq:"
-        log_info "  Ubuntu/Debian: sudo apt install jq"
-        log_info "  Fedora/RHEL: sudo dnf install jq"
-        log_info "  Arch Linux: sudo pacman -S jq"
-        log_info "  macOS: brew install jq"
-        exit 1
-    fi
-    
-    # 从 gradle.properties 读取 Modrinth 项目 ID
-    local modrinth_id=$(grep "^publish.modrinth=" gradle.properties | cut -d'=' -f2)
-    
+
+    # 修复 2: 严格清除可能存在的 Windows \r 换行符
+    local modrinth_id=$(grep "^publish.modrinth=" gradle.properties | cut -d'=' -f2 | tr -d '\r')
+
     if [ -z "$modrinth_id" ] || [ "$modrinth_id" = "# Modrinth mod slug" ]; then
         log_error "未在 gradle.properties 中设置 publish.modrinth"
         exit 1
     fi
-    
+
     log_info "Modrinth 项目 ID: $modrinth_id"
-    
-    # 准备更新日志文件路径
     local changelog_file="build/changelog.md"
-    
-    if [ ! -f "$changelog_file" ]; then
-        log_error "更新日志文件不存在：$changelog_file"
-        exit 1
-    fi
-    
-    # 读取更新日志内容
     local changelog_content=$(cat "$changelog_file")
-    
-    # 为每个版本创建发布
+
     for mc_version in "1.20.1" "1.21.1"; do
         local jar_file="build/releases/${mc_version}/nebula-${VERSION}+${mc_version}.jar"
-        
+
         if [ ! -f "$jar_file" ]; then
             log_error "找不到文件：$jar_file"
             continue
         fi
-        
+
         log_info "上传 $mc_version 版本到 Modrinth..."
-        
-        # 获取原始文件名
-        local real_filename=$(basename "$jar_file")
-        
-        # 使用 jq 安全地构建 JSON 数据
         local version_name="${VERSION}-${mc_version}"
-        local json_data=$(jq -n \
+
+        # 修复 3: 使用 -c 参数将 JSON 压缩为安全的单行字符串，并移除冗余的 null 字段
+        local json_data=$(jq -n -c \
             --arg name "${version_name}" \
             --arg version "${version_name}" \
             --arg project_id "${modrinth_id}" \
             --arg mc_version "${mc_version}" \
             --arg desc "Nebula ${VERSION} for Minecraft ${mc_version}" \
             --arg changelog "${changelog_content}" \
-            --arg filename "${real_filename}" \
             '{
                 name: $name,
                 version_number: $version,
                 version_type: "release",
                 project_id: $project_id,
-                file_parts: [$filename],
-                primary_file: $filename,
+                file_parts: ["file"],
+                primary_file: "file",
                 dependencies: [
                     {
-                        version_id: null,
                         project_id: "P7dR8mSH",
-                        file_name: null,
                         dependency_type: "required"
                     },
                     {
-                        version_id: null,
                         project_id: "mOgUt4GM",
-                        file_name: null,
                         dependency_type: "required"
                     },
                     {
-                        version_id: null,
                         project_id: "1eAoo2KR",
-                        file_name: null,
                         dependency_type: "required"
                     },
                     {
-                        version_id: null,
                         project_id: "RSFrpoou",
-                        file_name: null,
-                        dependency_type: "optional"
+                        dependency_type: "required"
                     }
                 ],
                 loaders: ["fabric"],
                 game_versions: [$mc_version],
-                featured: false,
+                featured: true,
                 status: "listed",
-                project_slug: null,
                 description: $desc,
-                changelog: $changelog,
-                changelog_url: null,
-                metadata: null
+                changelog: $changelog
             }')
-        
-        # 上传到 Modrinth API (直接使用原始文件，不需要临时目录)
+
         log_info "发送请求到 Modrinth API..."
+
+        # 修复 1: 使用固定的 "file" 作为 form part name，避免因文件名中的 + 号导致解析崩溃
         local response=$(curl -s -X POST \
             -H "Authorization: ${MODRINTH_TOKEN}" \
-            -F "data=${json_data};type=application/json" \
-            -F "${real_filename}=@${jar_file}" \
-            "https://api.modrinth.com/v2/version" 2>/dev/null)
-        
+            -F "data=${json_data}" \
+            -F "file=@${jar_file}" \
+            "https://api.modrinth.com/v2/version")
+
         # 检查响应
         if echo "$response" | grep -q '"id"'; then
             local version_id=$(echo "$response" | jq -r '.id // empty')
-            if [ -n "$version_id" ]; then
-                log_success "成功上传 $mc_version 版本到 Modrinth (ID: $version_id)"
-                log_info "查看链接：https://modrinth.com/mod/${modrinth_id}/version/${version_id}"
-            else
-                log_error "上传到 Modrinth 失败：无法解析版本 ID"
-                log_error "API 响应：$response"
-            fi
+            log_success "成功上传 $mc_version 版本到 Modrinth (ID: $version_id)"
         else
             local error_message=$(echo "$response" | jq -r '.error // .message // "未知错误"' 2>/dev/null || echo "$response")
             log_error "上传到 Modrinth 失败：$error_message"
+            log_error "API 完整响应：$response"
         fi
     done
-    
-    log_success "Modrinth 上传完成"
-}
 
+    log_success "Modrinth 上传流程结束"
+}
 # --------------------------- 清理临时文件 ----------------------------------
 cleanup() {
     log_info "清理临时文件..."

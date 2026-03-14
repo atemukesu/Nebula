@@ -26,21 +26,39 @@ class BaseTracker:
 
 
 class MeshScatterTracker(BaseTracker):
-    """P3: Mesh Surface Scatter"""
+    """P3: Mesh Surface Scatter — dynamic density adjustment for stretching"""
 
     def __init__(self, name):
         super().__init__(name)
-        self.tri_indices = None
-        self.bary_weights = None
-        self.static_colors = None
-        self.static_tex_ids = None
-        self.loop_tri_verts = None
+        self.loop_tri_verts = None       # (tri_count, 3) int32
+        self.density_per_area = 0.0      # particles per unit area
+        self.next_pid = 0
+        self.rng = None
 
+        # Flat arrays for all current particles
+        self.all_tri_idx = None          # (N,) int32 — which triangle
+        self.all_bary = None             # (N, 3) float32
+        self.all_colors = None           # (N, 4) uint8
+        self.all_tex_ids = None          # (N,) uint8
+        self.all_pids = None             # (N,) int32
+
+        # Per-triangle topology (from initial mesh, constant across frames)
+        self.tri_mat_indices_all = None  # (tri_count,) int32
+        self.tri_loops = None            # (tri_count, 3) int32
+        self.all_uvs = None              # (total_loops, 2) float32
+        self.has_uvs = False
+
+        # Per-material colour / tex sampling tables
+        self.per_mat_image_data = {}     # mat_idx -> (pixels, w, h) | None
+        self.per_mat_fallback_color = {} # mat_idx -> (4,) uint8
+        self.per_mat_tex_id = {}         # mat_idx -> uint8
+
+    # ------------------------------------------------------------------
+    # prepare  (called once at start-frame)
+    # ------------------------------------------------------------------
     def prepare(
         self, eval_obj, settings, mat_map, image_cache, report_fn=None, mesh=None
     ):
-        # 如果外部传入了 mesh，就使用外部的，并不由本函数负责清理
-        # 否则自己创建并负责清理
         own_mesh = False
         if mesh is None:
             mesh = eval_obj.to_mesh()
@@ -49,12 +67,18 @@ class MeshScatterTracker(BaseTracker):
         try:
             self._precompute(mesh, settings.sampling_density)
             if self.valid:
-                self._bake_colors(mesh.materials, image_cache, report_fn)
-                self._bake_tex_ids(mesh.materials, mat_map)
+                self._prepare_color_data(mesh.materials, image_cache, report_fn)
+                self._prepare_tex_id_data(mesh.materials, mat_map)
+                # Bake initial colours & tex-ids
+                self.all_colors = self._sample_colors(self.all_tri_idx, self.all_bary)
+                self.all_tex_ids = self._sample_tex_ids(self.all_tri_idx)
         finally:
             if own_mesh:
                 eval_obj.to_mesh_clear()
 
+    # ------------------------------------------------------------------
+    # _precompute
+    # ------------------------------------------------------------------
     def _precompute(self, mesh, density, seed=0):
         mesh.calc_loop_triangles()
         loop_tris = mesh.loop_triangles
@@ -72,7 +96,22 @@ class MeshScatterTracker(BaseTracker):
         self.loop_tri_verts = np.zeros((tri_count, 3), dtype=np.int32)
         loop_tris.foreach_get("vertices", self.loop_tri_verts.ravel())
 
-        # Calculate Areas
+        # Loop indices (for UV lookup of new particles)
+        self.tri_loops = np.zeros((tri_count, 3), dtype=np.int32)
+        loop_tris.foreach_get("loops", self.tri_loops.ravel())
+
+        # UV data
+        if mesh.uv_layers.active:
+            uv_layer = mesh.uv_layers.active.data
+            self.all_uvs = np.zeros((len(uv_layer), 2), dtype=np.float32)
+            uv_layer.foreach_get("uv", self.all_uvs.ravel())
+            self.has_uvs = True
+
+        # Material index per triangle (all tris, not just chosen ones)
+        self.tri_mat_indices_all = np.zeros(tri_count, dtype=np.int32)
+        loop_tris.foreach_get("material_index", self.tri_mat_indices_all)
+
+        # ---- Areas ----
         mesh_verts = np.zeros((len(verts), 3), dtype=np.float32)
         verts.foreach_get("co", mesh_verts.ravel())
 
@@ -92,17 +131,11 @@ class MeshScatterTracker(BaseTracker):
             self.valid = False
             return
 
-        # Relaxed Particle Count Calculation
         raw_count = total_area * density * 10
-        # Ensure at least 1 particle if raw_count is close to 1 or density is > 0 but area is small
-        # But if raw_count is extremely small (e.g. 0.0001), maybe user intended 0?
-        # Let's say: if density > 0 and area > 0 ...
         target_count = int(raw_count)
 
         if target_count < 1:
-            if (
-                raw_count > 0.001
-            ):  # Threshold to force at least 1 particle for small meshes
+            if raw_count > 0.001:
                 print(
                     f"[Nebula] {self.name}: "
                     + bpy.app.translations.pgettext(
@@ -126,80 +159,77 @@ class MeshScatterTracker(BaseTracker):
                 + f": {target_count} (Area={total_area:.4f}, Density={density})"
             )
 
-        probs = areas / total_area
-        rng = np.random.default_rng(seed)
+        # ---- density & RNG ----
+        self.density_per_area = target_count / total_area
+        self.rng = np.random.default_rng(seed)
 
-        self.tri_indices = rng.choice(tri_count, size=target_count, p=probs)
+        # Distribute particles proportionally across triangles
+        per_tri_float = areas * self.density_per_area
+        per_tri_count = np.floor(per_tri_float).astype(np.int32)
 
-        # Barycentric
-        r1 = rng.random(target_count).astype(np.float32)
-        r2 = rng.random(target_count).astype(np.float32)
+        deficit = target_count - per_tri_count.sum()
+        if deficit > 0:
+            remainder = per_tri_float - per_tri_count
+            r_sum = remainder.sum()
+            probs = remainder / r_sum if r_sum > 0 else np.ones(tri_count) / tri_count
+            bonus = self.rng.choice(tri_count, size=deficit, replace=True, p=probs)
+            for ti in bonus:
+                per_tri_count[ti] += 1
+
+        # Build flat arrays
+        total_particles = int(per_tri_count.sum())
+        self.all_tri_idx = np.repeat(
+            np.arange(tri_count, dtype=np.int32), per_tri_count
+        )
+
+        r1 = self.rng.random(total_particles).astype(np.float32)
+        r2 = self.rng.random(total_particles).astype(np.float32)
         sqrt_r1 = np.sqrt(r1)
-        w_u = 1.0 - sqrt_r1
-        w_v = sqrt_r1 * (1.0 - r2)
-        w_w = sqrt_r1 * r2
-        self.bary_weights = np.stack((w_u, w_v, w_w), axis=1)
+        self.all_bary = np.stack(
+            (1.0 - sqrt_r1, sqrt_r1 * (1.0 - r2), sqrt_r1 * r2), axis=1
+        )
 
-        # UVs
-        self.static_uvs = np.zeros((target_count, 2), dtype=np.float32)
-        if mesh.uv_layers.active:
-            uv_layer = mesh.uv_layers.active.data
-            all_uvs = np.zeros((len(uv_layer), 2), dtype=np.float32)
-            uv_layer.foreach_get("uv", all_uvs.ravel())
-
-            tri_loops = np.zeros((tri_count, 3), dtype=np.int32)
-            loop_tris.foreach_get("loops", tri_loops.ravel())
-
-            chosen_loops = tri_loops[self.tri_indices]
-            uv0 = all_uvs[chosen_loops[:, 0]]
-            uv1 = all_uvs[chosen_loops[:, 1]]
-            uv2 = all_uvs[chosen_loops[:, 2]]
-
-            self.static_uvs = (
-                uv0 * w_u[:, None] + uv1 * w_v[:, None] + uv2 * w_w[:, None]
-            )
-
-        # Material Indices
-        all_mat_indices = np.zeros(tri_count, dtype=np.int32)
-        loop_tris.foreach_get("material_index", all_mat_indices)
-        self.mat_indices = all_mat_indices[self.tri_indices]
-
+        self.all_pids = np.arange(total_particles, dtype=np.int32)
+        self.next_pid = total_particles
         self.valid = True
 
-    def _bake_colors(self, materials, image_cache, report_fn):
-        count = len(self.tri_indices)
-        self.static_colors = np.full((count, 4), 255, dtype=np.uint8)
+    # ------------------------------------------------------------------
+    # Material / colour helpers  (store lookup tables, don't bake yet)
+    # ------------------------------------------------------------------
+    def _prepare_color_data(self, materials, image_cache, report_fn):
+        """Build per-material colour sampling lookup tables."""
 
-        unique_mats = np.unique(self.mat_indices)
+        def find_image_node(node, depth=0):
+            if depth > 5:
+                return None
+            if node.type == "TEX_IMAGE":
+                return node
+            for inp in node.inputs:
+                if inp.is_linked:
+                    res = find_image_node(inp.links[0].from_node, depth + 1)
+                    if res:
+                        return res
+            return None
+
+        unique_mats = np.unique(self.tri_mat_indices_all)
         for m_idx in unique_mats:
             if m_idx < 0 or m_idx >= len(materials):
+                self.per_mat_fallback_color[m_idx] = np.array(
+                    [255, 255, 255, 255], dtype=np.uint8
+                )
                 continue
             mat = materials[m_idx]
             if not mat:
+                self.per_mat_fallback_color[m_idx] = np.array(
+                    [255, 255, 255, 255], dtype=np.uint8
+                )
                 continue
 
             target_img = None
             found_method = "Default (White)"
             fallback_color = [1.0, 1.0, 1.0, 1.0]
 
-            # Helper to find image node recursively
-            def find_image_node(node, depth=0):
-                if depth > 5:
-                    return None
-                if node.type == "TEX_IMAGE":
-                    return node
-
-                # Check inputs
-                for input in node.inputs:
-                    if input.is_linked:
-                        link = input.links[0]
-                        res = find_image_node(link.from_node, depth + 1)
-                        if res:
-                            return res
-                return None
-
             if mat.use_nodes and mat.node_tree:
-                # 1. Try common shader inputs
                 targets = []
                 for node in mat.node_tree.nodes:
                     if node.type == "BSDF_PRINCIPLED":
@@ -212,7 +242,6 @@ class MeshScatterTracker(BaseTracker):
                         if len(node.inputs) > 0:
                             targets.append(node.inputs[0])
 
-                # Also check Output node inputs
                 output_node = next(
                     (n for n in mat.node_tree.nodes if n.type == "OUTPUT_MATERIAL"),
                     None,
@@ -224,16 +253,13 @@ class MeshScatterTracker(BaseTracker):
                 for input_socket in targets:
                     if not input_socket:
                         continue
-
                     if input_socket.is_linked:
-                        # Walk up to find texture
                         img_node = find_image_node(input_socket.links[0].from_node)
                         if img_node:
                             target_img = img_node.image
                             found_method = "Node Tree Scan"
-                            break  # Image takes precedence
+                            break
                     elif not found_fallback:
-                        # Use default value as fallback color if it's a color socket
                         dv = getattr(input_socket, "default_value", None)
                         if dv is not None and hasattr(dv, "__len__") and len(dv) >= 3:
                             fallback_color = [
@@ -247,7 +273,6 @@ class MeshScatterTracker(BaseTracker):
                             found_fallback = True
                             found_method = "Base Color (Value)"
 
-                # 2. Fallback: Search for ANY Image Texture node with an image if still none
                 if not target_img:
                     for node in mat.node_tree.nodes:
                         if node.type == "TEX_IMAGE" and node.image:
@@ -259,7 +284,6 @@ class MeshScatterTracker(BaseTracker):
                                 target_img = node.image
                                 found_method = "First Image Node"
             else:
-                # No nodes: use diffuse color
                 fallback_color = list(mat.diffuse_color)
                 found_method = "Diffuse Color"
 
@@ -273,56 +297,209 @@ class MeshScatterTracker(BaseTracker):
                 )
                 report_fn(msg)
 
-            mask = self.mat_indices == m_idx
             if target_img and target_img.name in image_cache:
-                pixels, w, h = image_cache[target_img.name]
-                sub_uvs = self.static_uvs[mask]
+                self.per_mat_image_data[m_idx] = image_cache[target_img.name]
+            else:
+                self.per_mat_image_data[m_idx] = None
 
-                # Nearest Neighbor Sampling
-                u = sub_uvs[:, 0] % 1.0
-                v = sub_uvs[:, 1] % 1.0
+            self.per_mat_fallback_color[m_idx] = (
+                np.array(fallback_color[:4]) * 255
+            ).astype(np.uint8)
+
+    def _prepare_tex_id_data(self, materials, mat_map):
+        for i, mat in enumerate(materials):
+            if mat and mat.name in mat_map:
+                self.per_mat_tex_id[i] = mat_map[mat.name]
+            else:
+                self.per_mat_tex_id[i] = 0
+
+    # ------------------------------------------------------------------
+    # Sampling helpers  (used both at init and per-frame for new particles)
+    # ------------------------------------------------------------------
+    def _sample_colors(self, tri_indices, bary_weights):
+        count = len(tri_indices)
+        if count == 0:
+            return np.empty((0, 4), dtype=np.uint8)
+
+        colors = np.full((count, 4), 255, dtype=np.uint8)
+        mat_indices = self.tri_mat_indices_all[tri_indices]
+
+        for m_idx in np.unique(mat_indices):
+            mask = mat_indices == m_idx
+            img_data = self.per_mat_image_data.get(m_idx)
+
+            if img_data is not None:
+                pixels, w, h = img_data
+                if self.has_uvs:
+                    sub_tri = tri_indices[mask]
+                    sub_bary = bary_weights[mask]
+                    chosen_loops = self.tri_loops[sub_tri]
+                    uv0 = self.all_uvs[chosen_loops[:, 0]]
+                    uv1 = self.all_uvs[chosen_loops[:, 1]]
+                    uv2 = self.all_uvs[chosen_loops[:, 2]]
+                    uvs = (
+                        uv0 * sub_bary[:, 0:1]
+                        + uv1 * sub_bary[:, 1:2]
+                        + uv2 * sub_bary[:, 2:3]
+                    )
+                else:
+                    uvs = np.zeros((mask.sum(), 2), dtype=np.float32)
+
+                u = uvs[:, 0] % 1.0
+                v = uvs[:, 1] % 1.0
                 x = (u * w).astype(np.int32)
                 y = (v * h).astype(np.int32)
                 np.clip(x, 0, w - 1, out=x)
                 np.clip(y, 0, h - 1, out=y)
+                colors[mask] = (pixels[y, x] * 255).astype(np.uint8)
+            elif m_idx in self.per_mat_fallback_color:
+                colors[mask] = self.per_mat_fallback_color[m_idx]
 
-                self.static_colors[mask] = (pixels[y, x] * 255).astype(np.uint8)
-            else:
-                # Use fallback color (Base Color value or diffuse color)
-                self.static_colors[mask] = (np.array(fallback_color[:4]) * 255).astype(
-                    np.uint8
-                )
+        return colors
 
-    def _bake_tex_ids(self, materials, mat_map):
-        count = len(self.tri_indices)
-        self.static_tex_ids = np.zeros(count, dtype=np.uint8)
-        for i, mat in enumerate(materials):
-            if mat and mat.name in mat_map:
-                tid = mat_map[mat.name]
-                self.static_tex_ids[self.mat_indices == i] = tid
+    def _sample_tex_ids(self, tri_indices):
+        count = len(tri_indices)
+        if count == 0:
+            return np.empty(0, dtype=np.uint8)
 
+        tex_ids = np.zeros(count, dtype=np.uint8)
+        mat_indices = self.tri_mat_indices_all[tri_indices]
+        for m_idx in np.unique(mat_indices):
+            if m_idx in self.per_mat_tex_id:
+                tex_ids[mat_indices == m_idx] = self.per_mat_tex_id[m_idx]
+        return tex_ids
+
+    # ------------------------------------------------------------------
+    # _adjust_particles  (called every frame in get_data)
+    # ------------------------------------------------------------------
+    def _adjust_particles(self, current_areas):
+        """Add / remove particles so that density stays uniform.
+
+        Uses a hysteresis dead-zone to avoid flickering when areas
+        oscillate near a rounding boundary (e.g. 1.00 → 1.01 → 0.99).
+        A triangle must differ by ≥20 % (and at least 2 particles)
+        before any spawn / despawn is triggered.
+        """
+        tri_count = len(current_areas)
+
+        raw_desired = current_areas * self.density_per_area
+        desired = np.round(raw_desired).astype(np.int32)
+        desired = np.maximum(desired, 0)
+
+        current_counts = np.bincount(
+            self.all_tri_idx, minlength=tri_count
+        ).astype(np.int32)
+
+        diff = desired - current_counts
+
+        # ---- Early exit: nothing changed ----
+        if np.all(diff == 0):
+            return
+
+        # ---- Hysteresis dead-zone ----
+        # Only act when change exceeds 20% of current count AND ≥2 particles
+        threshold = np.maximum(current_counts * 0.2, 2).astype(np.int32)
+        diff = np.where(np.abs(diff) >= threshold, diff, 0)
+
+        if np.all(diff == 0):
+            return
+
+        # ---- Spawn: triangles that grew ----
+        add_mask = diff > 0
+        if np.any(add_mask):
+            add_tris = np.where(add_mask)[0]
+            add_counts = diff[add_tris]
+            total_new = int(add_counts.sum())
+
+            new_tri = np.repeat(add_tris, add_counts).astype(np.int32)
+
+            r1 = self.rng.random(total_new).astype(np.float32)
+            r2 = self.rng.random(total_new).astype(np.float32)
+            sqrt_r1 = np.sqrt(r1)
+            new_bary = np.stack(
+                (1.0 - sqrt_r1, sqrt_r1 * (1.0 - r2), sqrt_r1 * r2), axis=1
+            )
+
+            new_colors = self._sample_colors(new_tri, new_bary)
+            new_tex = self._sample_tex_ids(new_tri)
+            new_pids = np.arange(
+                self.next_pid, self.next_pid + total_new, dtype=np.int32
+            )
+            self.next_pid += total_new
+
+            self.all_tri_idx = np.concatenate([self.all_tri_idx, new_tri])
+            self.all_bary = np.concatenate([self.all_bary, new_bary])
+            self.all_colors = np.concatenate([self.all_colors, new_colors])
+            self.all_tex_ids = np.concatenate([self.all_tex_ids, new_tex])
+            self.all_pids = np.concatenate([self.all_pids, new_pids])
+
+        # ---- Despawn: triangles that shrank ----
+        remove_mask = diff < 0
+        if np.any(remove_mask):
+            n = len(self.all_tri_idx)
+            if n == 0:
+                return
+
+            # Vectorised rank-based removal:
+            # sort by tri, keep the first desired[tri] particles per group
+            sort_idx = np.argsort(self.all_tri_idx, kind="stable")
+            sorted_tri = self.all_tri_idx[sort_idx]
+
+            # Rank within each tri-group
+            group_change = np.empty(n, dtype=bool)
+            group_change[0] = True
+            group_change[1:] = sorted_tri[1:] != sorted_tri[:-1]
+            group_starts = np.where(group_change)[0]
+            group_ids = np.cumsum(group_change) - 1
+            ranks = np.arange(n, dtype=np.int32) - group_starts[group_ids]
+
+            keep_sorted = ranks < desired[sorted_tri]
+
+            keep_full = np.zeros(n, dtype=bool)
+            keep_full[sort_idx] = keep_sorted
+
+            self.all_tri_idx = self.all_tri_idx[keep_full]
+            self.all_bary = self.all_bary[keep_full]
+            self.all_colors = self.all_colors[keep_full]
+            self.all_tex_ids = self.all_tex_ids[keep_full]
+            self.all_pids = self.all_pids[keep_full]
+
+    # ------------------------------------------------------------------
+    # get_data  (called every frame)
+    # ------------------------------------------------------------------
     def get_data(self, eval_obj, mesh=None):
         if not self.valid or mesh is None:
-            return None
+            return None, None, None, None, None
 
         verts = np.zeros((len(mesh.vertices), 3), dtype=np.float32)
         mesh.vertices.foreach_get("co", verts.ravel())
 
-        chosen_tri_verts = self.loop_tri_verts[self.tri_indices]
-        p0 = verts[chosen_tri_verts[:, 0]]
-        p1 = verts[chosen_tri_verts[:, 1]]
-        p2 = verts[chosen_tri_verts[:, 2]]
+        # Current per-triangle areas
+        v0 = verts[self.loop_tri_verts[:, 0]]
+        v1 = verts[self.loop_tri_verts[:, 1]]
+        v2 = verts[self.loop_tri_verts[:, 2]]
+        cross = np.cross(v1 - v0, v2 - v0)
+        current_areas = np.sqrt(np.sum(cross**2, axis=1)) * 0.5
+
+        # Adjust particle distribution
+        self._adjust_particles(current_areas)
+
+        if len(self.all_tri_idx) == 0:
+            return None, None, None, None, None
+
+        # Barycentric interpolation → world positions
+        chosen = self.loop_tri_verts[self.all_tri_idx]
+        p0 = verts[chosen[:, 0]]
+        p1 = verts[chosen[:, 1]]
+        p2 = verts[chosen[:, 2]]
 
         pos = (
-            p0 * self.bary_weights[:, 0:1]
-            + p1 * self.bary_weights[:, 1:2]
-            + p2 * self.bary_weights[:, 2:3]
+            p0 * self.all_bary[:, 0:1]
+            + p1 * self.all_bary[:, 1:2]
+            + p2 * self.all_bary[:, 2:3]
         )
 
-        count = len(pos)
-        pid = np.arange(count, dtype=np.int32)
-
-        return pos, self.static_colors, None, self.static_tex_ids, pid
+        return pos, self.all_colors, None, self.all_tex_ids, self.all_pids
 
 
 class NativeParticleTracker(BaseTracker):

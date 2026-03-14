@@ -99,8 +99,8 @@ public class NblStreamer implements Runnable {
     private final TextureAtlasMap textureMap;
 
     // [优化] 使用数组 (Structure of Arrays) 代替 HashMap，提升 CPU 缓存命中率
-    // 默认分配 100w 粒子容量，避免频繁扩容
-    private final ParticleStateData state = new ParticleStateData(1_050_000);
+    // 初始仅分配小容量，大粒子系统会自动触发内部的 resize() 扩容
+    private final ParticleStateData state = new ParticleStateData(4096);
 
     private final BlockingQueue<ByteBuffer> gpuBufferQueue;
     private final AtomicBoolean isRunning = new AtomicBoolean(true);
@@ -111,8 +111,8 @@ public class NblStreamer implements Runnable {
     private ByteBuffer cachedCompressedBuffer = null;
 
     // GPU Buffer Pool (智能对象池)
-    private static final int INITIAL_BUFFER_SIZE = 1 * 1024 * 1024; // 1MB
-    private static final int MAX_BUFFER_CAPACITY = 8 * 1024 * 1024; // 8MB
+    private static final int INITIAL_BUFFER_SIZE = 16 * 1024; // 16KB (足够容纳约 340 个粒子)
+    private static final int MAX_BUFFER_CAPACITY = 32 * 1024 * 1024; // 32MB (足够容纳约 66 万粒子)
     private static final java.util.concurrent.ConcurrentLinkedQueue<ByteBuffer> freeBuffers = new java.util.concurrent.ConcurrentLinkedQueue<>();
     private static final java.util.concurrent.atomic.AtomicLong totalAllocatedMemory = new java.util.concurrent.atomic.AtomicLong(
             0);

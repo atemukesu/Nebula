@@ -335,19 +335,50 @@ public class NblStreamer implements Runnable {
                 ensureCompressedBuffer(compressedSize);
                 cachedCompressedBuffer.clear();
                 cachedCompressedBuffer.limit(compressedSize);
-                channel.read(cachedCompressedBuffer, offset);
+
+                // 1. 循环读取，完美模拟 Rust 的 read_exact
+                long currentOffset = offset;
+                while (cachedCompressedBuffer.hasRemaining()) {
+                    int read = channel.read(cachedCompressedBuffer, currentOffset);
+                    if (read == -1) throw new IOException("Unexpected EOF while reading frame " + currentFrameIdx);
+                    currentOffset += read;
+                }
                 cachedCompressedBuffer.flip();
 
+                // 2. 动态扩容解压缓冲区 (放弃写死的 15 倍，改为失败时成倍扩容)
                 long decompressedSize = Zstd.decompressedSize(cachedCompressedBuffer);
-                ensureDecompressedBuffer((int) decompressedSize, compressedSize);
+                // 如果获取不到真实大小，初始给一个稍大的倍数 (如 30 倍)
+                int initSize = (int) (decompressedSize > 0 ? decompressedSize : compressedSize * 30);
+                ensureDecompressedBuffer(initSize, compressedSize);
 
                 cachedDecompressedBuffer.clear();
-                try {
-                    long decompressedBytes = Zstd.decompress(cachedDecompressedBuffer, cachedCompressedBuffer);
-                    cachedDecompressedBuffer.position((int) decompressedBytes);
-                    cachedDecompressedBuffer.flip();
-                } catch (Exception e) {
-                    Nebula.LOGGER.error("Decompress failed frame {}", currentFrameIdx);
+                boolean decompressed = false;
+
+                // 最多重试 5 次扩容
+                for (int attempts = 0; attempts < 5; attempts++) {
+                    try {
+                        long decompressedBytes = Zstd.decompress(cachedDecompressedBuffer, cachedCompressedBuffer);
+                        cachedDecompressedBuffer.position((int) decompressedBytes);
+                        cachedDecompressedBuffer.flip();
+                        decompressed = true;
+                        break; // 解压成功，跳出循环
+                    } catch (Exception e) {
+                        String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
+                        // 如果是目标缓冲区太小，则翻倍扩容后重试
+                        if (msg.contains("destination buffer is too small") || decompressedSize == 0) {
+                            Nebula.LOGGER.warn("Zstd buffer too small, resizing...");
+                            ensureDecompressedBuffer(cachedDecompressedBuffer.capacity() * 2, compressedSize);
+                            cachedDecompressedBuffer.clear();
+                            cachedCompressedBuffer.position(0); // 必须重置输入流的位置
+                        } else {
+                            // 其他数据损坏错误直接抛出
+                            throw e;
+                        }
+                    }
+                }
+
+                if (!decompressed) {
+                    Nebula.LOGGER.error("Decompress failed frame {} after multiple resizes", currentFrameIdx);
                     currentFrameIdx++;
                     continue;
                 }

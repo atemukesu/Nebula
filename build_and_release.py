@@ -48,11 +48,20 @@ def ask_yes_no(prompt: str, default_yes=True) -> bool:
     return reply.startswith('y')
 
 def run_cmd(cmd_list, capture=False, check=True):
-    """运行命令行命令"""
+    """运行命令行命令 (修复了 Windows GBK 编码问题)"""
     try:
         if capture:
-            result = subprocess.run(cmd_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=check)
-            return result.stdout.strip()
+            # 强制指定 utf-8 编码，防止 Windows 控制台 gbk 解码 git 的 utf-8 输出时崩溃
+            result = subprocess.run(
+                cmd_list, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                text=True, 
+                encoding='utf-8', 
+                errors='replace', 
+                check=check
+            )
+            return result.stdout.strip() if result.stdout else ""
         else:
             subprocess.run(cmd_list, check=check)
             return ""
@@ -108,7 +117,13 @@ def check_environment():
         log_error("Java 未安装")
         sys.exit(1)
     
-    java_ver_out = subprocess.run(["java", "-version"], stderr=subprocess.PIPE, text=True).stderr
+    java_ver_out = subprocess.run(
+        ["java", "-version"], 
+        stderr=subprocess.PIPE, 
+        text=True, 
+        encoding='utf-8', 
+        errors='replace'
+    ).stderr
     first_line = java_ver_out.splitlines()[0] if java_ver_out else ""
     log_info(f"Java 版本：{first_line}")
 
@@ -433,7 +448,7 @@ def upload_to_modrinth():
         # 将 JSON 转为紧凑的字符串格式
         json_str = json.dumps(data_dict, separators=(',', ':'))
         
-        # 使用 curl 进行多表单上传 (等同于 bash 中的实现，无需安装 requests)
+        # 使用 curl 进行多表单上传
         curl_cmd = [
             "curl", "-s", "-X", "POST",
             "-H", f"Authorization: {token}",

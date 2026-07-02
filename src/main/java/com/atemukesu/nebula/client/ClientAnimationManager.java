@@ -40,22 +40,32 @@ package com.atemukesu.nebula.client;
 
 import com.atemukesu.nebula.client.enums.BlendMode;
 import com.atemukesu.nebula.client.enums.CullingBehavior;
+import com.atemukesu.nebula.client.enums.RenderPipeline;
 import com.atemukesu.nebula.client.gui.tools.PerformanceStats;
 import com.atemukesu.nebula.Nebula;
 import com.atemukesu.nebula.client.loader.NblStreamer;
+import com.atemukesu.nebula.client.mixin.ParticleManagerAccessor;
+import com.atemukesu.nebula.client.particle.NebulaParticle;
 import com.atemukesu.nebula.client.render.AnimationFrame;
 import com.atemukesu.nebula.client.render.GpuParticleRenderer;
 import com.atemukesu.nebula.client.render.ParticleTextureManager;
 import com.atemukesu.nebula.client.render.SharedTextureResource;
+import com.atemukesu.nebula.client.render.SoAFrameData;
 import com.atemukesu.nebula.client.render.TextureCacheSystem;
 import com.atemukesu.nebula.client.util.IrisUtil;
 import com.atemukesu.nebula.client.util.CurrentTimeUtil;
 import com.atemukesu.nebula.client.config.ModConfig;
 import com.atemukesu.nebula.particle.loader.AnimationLoader;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.particle.Particle;
+import net.minecraft.client.particle.ParticleManager;
+import net.minecraft.client.particle.ParticleTextureSheet;
 import net.minecraft.client.render.Camera;
 import net.minecraft.client.render.Frustum;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
+import net.minecraft.client.texture.Sprite;
+import net.minecraft.client.texture.SpriteAtlasTexture;
+import net.minecraft.util.Identifier;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
 import com.mojang.blaze3d.platform.GlStateManager;
@@ -69,8 +79,11 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Queue;
 
 /**
  * 客户端动画管理器
@@ -88,6 +101,7 @@ public class ClientAnimationManager {
     // 日志控制：避免刷屏
     private boolean hasLoggedIrisRenderPath = false;
     private boolean hasLoggedStandardRenderPath = false;
+    private Sprite cachedVanillaSprite;
 
     private ClientAnimationManager() {
         // 初始化 GPU 渲染器
@@ -191,6 +205,10 @@ public class ClientAnimationManager {
 
         // [Config Control] 如果不在 Replay 渲染模式且配置关闭了游戏内渲染，则跳过
         if (!CurrentTimeUtil.isRendering() && !config.shouldRenderInGame()) {
+            return;
+        }
+
+        if (config.getRenderPipeline() == RenderPipeline.VANILLA_BATCH) {
             return;
         }
 
@@ -390,6 +408,10 @@ public class ClientAnimationManager {
             return;
         }
 
+        if (config.getRenderPipeline() == RenderPipeline.VANILLA_BATCH) {
+            return;
+        }
+
         // 没有粒子，跳过
         if (this.getInstanceCount() == 0) {
             return;
@@ -581,9 +603,183 @@ public class ClientAnimationManager {
         }
     }
 
+    public void updateParticlePositions(Camera camera, Frustum frustum, float tickDelta) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.world == null || client.player == null) {
+            return;
+        }
+
+        ModConfig config = ModConfig.getInstance();
+        if (config.getRenderPipeline() != RenderPipeline.VANILLA_BATCH) {
+            return;
+        }
+        if (!CurrentTimeUtil.isRendering() && !config.shouldRenderInGame()) {
+            return;
+        }
+        if (this.getInstanceCount() == 0) {
+            return;
+        }
+
+        Sprite sprite = getVanillaParticleSprite(client);
+        if (sprite == null) {
+            return;
+        }
+
+        if (!hasLoggedStandardRenderPath) {
+            Nebula.LOGGER.info("[Nebula/Render] Using vanilla particle manager render path.");
+            hasLoggedStandardRenderPath = true;
+        }
+
+        boolean shouldCollectStats = config.getShowDebugHud();
+        PerformanceStats stats = null;
+        if (shouldCollectStats) {
+            stats = PerformanceStats.getInstance();
+            stats.beginFrame();
+        }
+
+        List<AnimationInstance> renderList;
+        synchronized (activeInstances) {
+            renderList = new ArrayList<>(activeInstances);
+        }
+
+        CullingBehavior behavior = config.getCullingBehavior();
+        double now = CurrentTimeUtil.getCurrentAnimationTime();
+        ParticleManager particleManager = client.particleManager;
+        int totalParticles = 0;
+        int renderedInstancesCount = 0;
+
+        for (AnimationInstance instance : renderList) {
+            boolean isVisible = true;
+            Box worldBbox = instance.getWorldBoundingBox();
+            if (frustum != null && worldBbox != null && !frustum.isVisible(worldBbox)) {
+                isVisible = false;
+            }
+
+            instance.ensureTexturesLoaded();
+            if (!isVisible && behavior == CullingBehavior.PAUSE_AND_HIDE) {
+                continue;
+            }
+
+            double elapsed = now - instance.startSeconds;
+            SoAFrameData frameData = instance.getNextVanillaFrame();
+            if (isVisible && frameData != null && frameData.count > 0) {
+                int particleCount = frameData.count;
+                totalParticles += particleCount;
+
+                double currentFrameFloat = elapsed * instance.targetFps;
+                float partialTicks = (float) (currentFrameFloat - (instance.renderedFrames - 1));
+                if (partialTicks < 0) {
+                    partialTicks = 0;
+                }
+                if (partialTicks > 1) {
+                    partialTicks = 1;
+                }
+
+                updateVanillaParticles(
+                        particleManager,
+                        instance,
+                        sprite,
+                        frameData,
+                        partialTicks);
+                if (particleCount > 0) {
+                    renderedInstancesCount++;
+                }
+            }
+        }
+
+        currentParticleCount = totalParticles;
+
+        if (shouldCollectStats && stats != null) {
+            stats.setParticleCount(totalParticles);
+            stats.setInstanceCount(renderedInstancesCount);
+            stats.setEmissiveStrength(1.0f);
+            stats.endFrame();
+        }
+    }
+
+    private Sprite getVanillaParticleSprite(MinecraftClient client) {
+        if (cachedVanillaSprite != null) {
+            return cachedVanillaSprite;
+        }
+
+        SpriteAtlasTexture atlas = ((ParticleManagerAccessor) client.particleManager).nebula$getParticleAtlasTexture();
+        if (atlas == null) {
+            return null;
+        }
+
+        //? if >= 1.21 {
+        cachedVanillaSprite = atlas.getSprite(Identifier.of(Nebula.MOD_ID, "nebula_particle"));
+        //? } else {
+        /*cachedVanillaSprite = atlas.getSprite(new Identifier(Nebula.MOD_ID, "nebula_particle"));
+        *///?}
+
+        if (cachedVanillaSprite == null) {
+            Nebula.LOGGER.warn("[Nebula/Render] Missing vanilla particle atlas sprite: {}:nebula_particle",
+                    Nebula.MOD_ID);
+        }
+        return cachedVanillaSprite;
+    }
+
+    private void updateVanillaParticles(ParticleManager particleManager, AnimationInstance instance,
+            Sprite sprite, SoAFrameData frameData, float partialTicks) {
+        Vec3d origin = instance.getOrigin();
+        int particleCount = frameData.count;
+
+        synchronized (instance.vanillaParticles) {
+            while (instance.vanillaParticles.size() < particleCount) {
+                NebulaParticle particle = new NebulaParticle(
+                        MinecraftClient.getInstance().world,
+                        origin.x,
+                        origin.y,
+                        origin.z,
+                        sprite);
+                addVanillaParticleDirect(particleManager, particle, particleCount);
+                instance.vanillaParticles.add(particle);
+            }
+
+            while (instance.vanillaParticles.size() > particleCount) {
+                NebulaParticle particle = instance.vanillaParticles.remove(instance.vanillaParticles.size() - 1);
+                particle.markDead();
+            }
+
+            for (int i = 0; i < particleCount; i++) {
+                float prevX = frameData.prevX[i];
+                float prevY = frameData.prevY[i];
+                float prevZ = frameData.prevZ[i];
+                float curX = frameData.curX[i];
+                float curY = frameData.curY[i];
+                float curZ = frameData.curZ[i];
+
+                double x = origin.x + prevX + (curX - prevX) * partialTicks;
+                double y = origin.y + prevY + (curY - prevY) * partialTicks;
+                double z = origin.z + prevZ + (curZ - prevZ) * partialTicks;
+
+                instance.vanillaParticles.get(i).setFrameData(x, y, z,
+                        frameData.sizes[i],
+                        frameData.colorsPacked[i]);
+            }
+        }
+    }
+
     /**
      * 清除所有动画实例
      */
+    private void addVanillaParticleDirect(ParticleManager particleManager, Particle particle, int expectedCount) {
+        Map<ParticleTextureSheet, Queue<Particle>> particles =
+                ((ParticleManagerAccessor) particleManager).nebula$getParticles();
+        ParticleTextureSheet sheet = particle.getType();
+        Queue<Particle> queue = particles.get(sheet);
+        if (!(queue instanceof ArrayDeque)) {
+            ArrayDeque<Particle> expandedQueue = new ArrayDeque<>(Math.max(expectedCount, 16384));
+            if (queue != null) {
+                expandedQueue.addAll(queue);
+            }
+            queue = expandedQueue;
+            particles.put(sheet, queue);
+        }
+        queue.add(particle);
+    }
+
     public void clearAllInstances() {
         synchronized (activeInstances) {
             for (AnimationInstance instance : activeInstances) {
@@ -623,6 +819,8 @@ public class ClientAnimationManager {
 
         // 缓存的帧数据
         private ByteBuffer lastFrameData;
+        private SoAFrameData lastVanillaFrameData;
+        private final List<NebulaParticle> vanillaParticles = new ArrayList<>();
 
         // 【架构变更】持有共享纹理资源
         private final SharedTextureResource textureResource;
@@ -635,7 +833,7 @@ public class ClientAnimationManager {
             this.texturesLoaded = true;
 
             // 创建 Streamer (Streamer 也会持有 resource 引用)
-            this.streamer = new NblStreamer(file, textureResource);
+            this.streamer = new NblStreamer(file, textureResource, isVanillaPipeline());
             this.targetFps = streamer.getTargetFps();
         }
 
@@ -656,11 +854,16 @@ public class ClientAnimationManager {
                 NblStreamer.releaseBuffer(lastFrameData);
                 lastFrameData = null;
             }
+            if (lastVanillaFrameData != null) {
+                lastVanillaFrameData.release();
+                lastVanillaFrameData = null;
+            }
+            clearVanillaParticles();
 
             // 重新创建 Streamer 以便重置状态
             try {
                 if (isStarted) {
-                    this.streamer = new NblStreamer(file, textureResource);
+                    this.streamer = new NblStreamer(file, textureResource, isVanillaPipeline());
                 }
             } catch (IOException e) {
                 Nebula.LOGGER.error("Failed to restart animation stream", e);
@@ -789,6 +992,90 @@ public class ClientAnimationManager {
             return lastFrameData;
         }
 
+        public SoAFrameData getNextVanillaFrame() {
+            if (!isStarted || isFinished) {
+                return null;
+            }
+
+            Double replayTime = CurrentTimeUtil.getReplayTime();
+            double now = CurrentTimeUtil.getCurrentAnimationTime();
+            double elapsed = now - startSeconds;
+            int totalFrames = streamer.getTotalFrames();
+            double duration = (double) totalFrames / targetFps;
+
+            if (replayTime != null && elapsed < 0) {
+                stop();
+                return null;
+            }
+
+            if (elapsed > duration) {
+                stop();
+                return null;
+            }
+
+            int expectedFrame = (int) Math.ceil(elapsed * targetFps);
+            if (expectedFrame < 0) {
+                expectedFrame = 0;
+            }
+            if (expectedFrame >= totalFrames) {
+                expectedFrame = totalFrames;
+            }
+
+            if (Math.abs(renderedFrames - expectedFrame) > 30) {
+                streamer.seek(expectedFrame);
+                renderedFrames = expectedFrame;
+                return lastVanillaFrameData;
+            }
+
+            SoAFrameData newData = null;
+
+            if (CurrentTimeUtil.isRendering()) {
+                if (renderedFrames < expectedFrame) {
+                    try {
+                        newData = streamer.getVanillaQueue().take();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return null;
+                    }
+                }
+            } else {
+                int framesToCatchUp = expectedFrame - renderedFrames;
+                if (expectedFrame >= totalFrames && !isFinished) {
+                    framesToCatchUp = Math.max(framesToCatchUp, 1);
+                }
+                int maxCatchUp = Math.min(framesToCatchUp, 5);
+
+                for (int i = 0; i < maxCatchUp; i++) {
+                    SoAFrameData temp = streamer.getVanillaQueue().poll();
+                    if (temp == null) {
+                        break;
+                    }
+                    if (newData != null) {
+                        newData.release();
+                        renderedFrames++;
+                    }
+                    newData = temp;
+                }
+            }
+
+            if (newData != null) {
+                if (newData.count == 0) {
+                    stop();
+                    newData.release();
+                    return null;
+                }
+
+                if (lastVanillaFrameData != null) {
+                    lastVanillaFrameData.release();
+                }
+
+                lastVanillaFrameData = newData;
+                renderedFrames++;
+            }
+
+            return lastVanillaFrameData;
+        }
+
         public void stop() {
             if (isFinished)
                 return;
@@ -802,12 +1089,30 @@ public class ClientAnimationManager {
                 NblStreamer.releaseBuffer(lastFrameData);
                 lastFrameData = null;
             }
+            if (lastVanillaFrameData != null) {
+                lastVanillaFrameData.release();
+                lastVanillaFrameData = null;
+            }
+            clearVanillaParticles();
 
             // 释放纹理资源引用 (Reference Counting)
             // 只有当实例彻底销毁时才释放
             if (textureResource != null) {
                 TextureCacheSystem.release(textureResource);
             }
+        }
+
+        private void clearVanillaParticles() {
+            synchronized (vanillaParticles) {
+                for (NebulaParticle particle : vanillaParticles) {
+                    particle.markDead();
+                }
+                vanillaParticles.clear();
+            }
+        }
+
+        private boolean isVanillaPipeline() {
+            return ModConfig.getInstance().getRenderPipeline() == RenderPipeline.VANILLA_BATCH;
         }
 
         public boolean isFinished() {

@@ -40,6 +40,7 @@ package com.atemukesu.nebula.client.config;
 
 import com.atemukesu.nebula.client.enums.BlendMode;
 import com.atemukesu.nebula.client.enums.CullingBehavior;
+import com.atemukesu.nebula.client.enums.RenderPipeline;
 
 import dev.isxander.yacl3.api.*;
 import dev.isxander.yacl3.api.controller.BooleanControllerBuilder;
@@ -109,6 +110,20 @@ public class NebulaYACLConfig {
                                                 .build())
                                 .category(ConfigCategory.createBuilder()
                                                 .name(Text.translatable("gui.nebula.config.category.rendering"))
+                                                .option(Option.<RenderPipeline>createBuilder()
+                                                                .name(Text.translatable(
+                                                                                "gui.nebula.config.render_pipeline"))
+                                                                .description(OptionDescription.of(Text.translatable(
+                                                                                "gui.nebula.config.render_pipeline.desc")))
+                                                                .binding(
+                                                                                RenderPipeline.GPU,
+                                                                                config::getRenderPipeline,
+                                                                                config::setRenderPipeline)
+                                                                .controller(opt -> EnumControllerBuilder.create(opt)
+                                                                                .enumClass(RenderPipeline.class)
+                                                                                .formatValue(mode -> Text.translatable(
+                                                                                                mode.getTranslationKey())))
+                                                                .build())
                                                 .option(Option.<BlendMode>createBuilder()
                                                                 .name(Text.translatable("gui.nebula.config.blend_mode"))
                                                                 .description(OptionDescription.of(Text.translatable(

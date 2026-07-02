@@ -40,6 +40,7 @@ package com.atemukesu.nebula.client.config;
 
 import com.atemukesu.nebula.client.enums.BlendMode;
 import com.atemukesu.nebula.client.enums.CullingBehavior;
+import com.atemukesu.nebula.client.enums.RenderPipeline;
 import com.atemukesu.nebula.client.render.GpuParticleRenderer;
 
 import net.minecraft.client.MinecraftClient;
@@ -56,6 +57,7 @@ public class ModConfig {
 
     // 渲染选项
     private BlendMode blendMode;
+    private RenderPipeline renderPipeline;
     private float emissiveStrength;
     private CullingBehavior cullingBehavior;
     
@@ -71,6 +73,7 @@ public class ModConfig {
         this.showCharts = true;
         // 默认使用普通混合
         this.blendMode = BlendMode.ALPHA;
+        this.renderPipeline = RenderPipeline.GPU;
         // 默认使用用户自定义的亮度
         this.emissiveStrength = 2.0f;
         this.cullingBehavior = CullingBehavior.SIMULATE_ONLY;
@@ -142,6 +145,17 @@ public class ModConfig {
                 GpuParticleRenderer.preloadOIT(w, h);
             }
         }
+    }
+
+    public RenderPipeline getRenderPipeline() {
+        if (this.renderPipeline == null) {
+            this.renderPipeline = RenderPipeline.GPU;
+        }
+        return this.renderPipeline;
+    }
+
+    public void setRenderPipeline(RenderPipeline renderPipeline) {
+        this.renderPipeline = renderPipeline == null ? RenderPipeline.GPU : renderPipeline;
     }
 
     /**

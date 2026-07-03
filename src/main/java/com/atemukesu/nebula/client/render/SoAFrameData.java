@@ -18,6 +18,7 @@ public class SoAFrameData {
     public float[] texLayers;
     public byte[] texs;
     public byte[] seqs;
+    public boolean eof;
 
     private SoAFrameData() {
     }
@@ -28,12 +29,14 @@ public class SoAFrameData {
             data = new SoAFrameData();
         }
         data.count = 0;
+        data.eof = false;
         data.ensureCapacity(minCapacity);
         return data;
     }
 
     public void release() {
         count = 0;
+        eof = false;
         if (POOL.size() < POOL_SOFT_CAP) {
             POOL.offer(this);
         }

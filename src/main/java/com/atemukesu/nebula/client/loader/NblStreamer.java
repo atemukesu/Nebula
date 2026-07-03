@@ -428,7 +428,9 @@ public class NblStreamer implements Runnable {
                 if (currentFrameIdx >= totalFrames) {
                     try {
                         if (outputVanillaFrames) {
-                            vanillaFrameDataQueue.put(SoAFrameData.obtain(0)); // EOF
+                            SoAFrameData eofFrame = SoAFrameData.obtain(0);
+                            eofFrame.eof = true;
+                            vanillaFrameDataQueue.put(eofFrame);
                         } else {
                             gpuBufferQueue.put(BufferUtils.createByteBuffer(0)); // EOF
                         }

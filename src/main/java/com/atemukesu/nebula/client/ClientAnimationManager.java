@@ -672,7 +672,7 @@ public class ClientAnimationManager {
 
             double elapsed = now - instance.startSeconds;
             SoAFrameData frameData = instance.getNextVanillaFrame();
-            if (isVisible && frameData != null && frameData.count > 0) {
+            if (isVisible && frameData != null) {
                 int particleCount = frameData.count;
                 totalParticles += particleCount;
 
@@ -1160,13 +1160,13 @@ public class ClientAnimationManager {
                     newData = temp;
                 }
 
-                if (newData == null && renderedFrames == 0 && streamer.getVanillaQueue().isEmpty()) {
+                if (newData == null && renderedFrames == 0 && !streamer.getVanillaQueue().isEmpty()) {
                     newData = streamer.getVanillaQueue().poll();
                 }
             }
 
             if (newData != null) {
-                if (newData.count == 0) {
+                if (newData.eof) {
                     stop();
                     newData.release();
                     return null;

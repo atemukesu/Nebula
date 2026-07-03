@@ -200,6 +200,14 @@ public class DebugHud {
                     String.format("Mode: %s | GL Err: 0x%X", stats.isIrisMode() ? "Iris" : "Standard", err),
                     err == 0 ? 0xFFFFFF : 0xFF5555));
 
+            String pipelineDisplay = switch (config.getRenderPipeline()) {
+                case GPU -> "GPU Render";
+                case VANILLA_BATCH -> "Vanilla Batch";
+            };
+            cachedLines.add(new CachedLine(
+                    String.format("Pipeline: %s", pipelineDisplay),
+                    0x55CCFF));
+
             // 显示当前混合模式
             String blendModeStr = config.getBlendMode().name();
             String cullingBehaviorStr = config.getCullingBehavior().name();
@@ -277,7 +285,7 @@ public class DebugHud {
         context.drawTextWithShadow(textRenderer, valStr, x + CHART_WIDTH - textRenderer.getWidth(valStr) - 2, y + 2,
                 colorARGB);
 
-// 绘制折线
+        // 绘制折线
         Tessellator tessellator = Tessellator.getInstance();
 
         RenderSystem.enableBlend();

@@ -178,8 +178,12 @@ public class NblStreamer implements Runnable {
             textureEntries.clear();
             for (int i = 0; i < textureCount; i++) {
                 int pathLen = readUnsignedShortLE(raf);
-                // Skip path bytes + rows (1 byte) + cols (1 byte)
-                raf.skipBytes(pathLen + 2);
+                byte[] pathBytes = new byte[pathLen];
+                raf.readFully(pathBytes);
+                int rows = raf.read() & 0xFF;
+                int cols = raf.read() & 0xFF;
+                textureEntries.add(new ParticleTextureManager.TextureEntry(
+                        new String(pathBytes, StandardCharsets.UTF_8), rows, cols));
             }
 
             this.frameOffsets = new long[totalFrames];
@@ -711,6 +715,8 @@ public class NblStreamer implements Runnable {
                 ((state.g[id] & 0xFF) << 8) |
                 (state.r[id] & 0xFF);
         frameData.texLayers[index] = textureMap.getLayer(state.tex[id] & 0xFF, state.seq[id] & 0xFF);
+        frameData.texs[index] = state.tex[id];
+        frameData.seqs[index] = state.seq[id];
     }
 
     private SoAFrameData collectLiveParticles(int frameIdx) {
@@ -748,6 +754,8 @@ public class NblStreamer implements Runnable {
                     ((s.g[id] & 0xFF) << 8) |
                     (s.r[id] & 0xFF);
             snapshot.texLayers[outIdx] = textureMap.getLayer(s.tex[id] & 0xFF, s.seq[id] & 0xFF);
+            snapshot.texs[outIdx] = s.tex[id];
+            snapshot.seqs[outIdx] = s.seq[id];
             outIdx++;
         }
 
@@ -914,6 +922,10 @@ public class NblStreamer implements Runnable {
      */
     public float[] getBboxMax() {
         return bboxMax;
+    }
+
+    public List<ParticleTextureManager.TextureEntry> getTextures() {
+        return textureEntries;
     }
 
     /**

@@ -16,6 +16,8 @@ public class SoAFrameData {
     public float[] sizes;
     public int[] colorsPacked;
     public float[] texLayers;
+    public byte[] texs;
+    public byte[] seqs;
 
     private SoAFrameData() {
     }
@@ -52,5 +54,7 @@ public class SoAFrameData {
         sizes = new float[newCapacity];
         colorsPacked = new int[newCapacity];
         texLayers = new float[newCapacity];
+        texs = new byte[newCapacity];
+        seqs = new byte[newCapacity];
     }
 }

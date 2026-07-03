@@ -50,7 +50,7 @@
     "gui.nebula.config.show_charts": "パフォーマンスチャートを表示",
     "gui.nebula.config.show_charts.desc": "HUDにリアルタイムのパフォーマンス折れ線グラフを描画します。",
     "gui.nebula.config.render_pipeline": "レンダーパイプライン",
-    "gui.nebula.config.render_pipeline.desc": "Nebulaがパーティクルを描画する方法を選択します。\n\nGPU：既存のSSBO/カスタムシェーダーパス。大量のパーティクルで最速。\n\nVanilla Batch：NebulaのフレームデータをMinecraftのパーティクルシステム経由で送信し、シェーダーパックとの互換性を向上します。ピークパフォーマンスは低くなり、テクスチャサポートが制限されます。",
+    "gui.nebula.config.render_pipeline.desc": "Nebulaがパーティクルを描画する方法を選択します。\n\n§6GPU§r：既存のSSBO/カスタムシェーダーパス。大量のパーティクルで最速。\n\n§6Vanilla Batch§r：NebulaのフレームデータをMinecraftのパーティクルシステム経由で送信し、シェーダーパックとの互換性を向上します。ピークパフォーマンスは低くなり、テクスチャサポートが制限されます。",
     "gui.nebula.config.render_pipeline.gpu": "GPUレンダリング",
     "gui.nebula.config.render_pipeline.vanilla_batch": "バニラバッチ",
     "gui.nebula.config.blend_mode": "パーティクルブレンドモード",

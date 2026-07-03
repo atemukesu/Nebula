@@ -50,7 +50,7 @@
     "gui.nebula.config.show_charts": "Show Performance Charts",
     "gui.nebula.config.show_charts.desc": "Draw real-time performance line charts in the HUD.",
     "gui.nebula.config.render_pipeline": "Render Pipeline",
-    "gui.nebula.config.render_pipeline.desc": "Select how Nebula submits particles.\n\nGPU: the existing SSBO/custom shader path, fastest for large particle counts.\n\nVanilla Batch: submits Nebula frame data through Minecraft's particle sheet for better shader-pack compatibility, with lower peak performance and limited texture support.",
+    "gui.nebula.config.render_pipeline.desc": "Select how Nebula submits particles.\n\n§6GPU§r: the existing SSBO/custom shader path, fastest for large particle counts.\n\n§6Vanilla Batch§r: submits Nebula frame data through Minecraft's particle sheet for better shader-pack compatibility, with lower peak performance and limited texture support.",
     "gui.nebula.config.render_pipeline.gpu": "GPU",
     "gui.nebula.config.render_pipeline.vanilla_batch": "Vanilla Batch",
     "gui.nebula.config.blend_mode": "Particle Blend Mode",

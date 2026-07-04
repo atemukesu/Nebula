@@ -366,8 +366,10 @@ def upload_to_github():
         
     # 收集需要上传的文件
     upload_files = []
-    for jar_file in glob.glob(os.path.join("build", "releases", "*", "nebula-*.jar")):
-        upload_files.append(jar_file)
+    for mc_ver in ["1.20.1", "1.21.1"]:
+        jar_path = os.path.join("build", "releases", mc_ver, f"nebula-{VERSION}+{mc_ver}.jar")
+        if os.path.isfile(jar_path):
+            upload_files.append(jar_path)
         
     # 创建 Release
     cmd = ["gh", "release", "create", release_tag, 
@@ -469,6 +471,15 @@ def upload_to_modrinth():
         except json.JSONDecodeError:
             log_error(f"解析 Modrinth 响应失败: {response}")
 
+def clean_release_dirs():
+    """清理旧的发布产物目录，防止历史文件被误上传"""
+    releases_dir = os.path.join("build", "releases")
+    if os.path.exists(releases_dir):
+        log_info(f"正在清理旧的发布目录: {releases_dir}")
+        shutil.rmtree(releases_dir)
+    os.makedirs(releases_dir, exist_ok=True)
+    log_success("发布目录已清空，准备构建新版本")
+
 def cleanup():
     """清理临时文件"""
     log_info("清理临时文件...")
@@ -494,6 +505,8 @@ def main():
     get_version_info()
     collect_changelog_input()
     generate_changelog()
+
+    clean_release_dirs()
     
     # 构建
     build_version("1.20.1")

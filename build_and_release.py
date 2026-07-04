@@ -359,10 +359,10 @@ def upload_to_github():
     changelog_file = os.path.join("build", "changelog.md")
     
     # 检查删除旧 Release
-    check_exists = run_cmd(["gh", "release", "view", release_tag], capture=True, check=False)
+    check_exists = run_cmd(["gh", "release", "view", release_tag, "--repo", gh_repo], capture=True, check=False)
     if "title:" in check_exists:
         log_warning(f"Release {release_tag} 已存在，正在删除旧版本...")
-        run_cmd(["gh", "release", "delete", release_tag, "--cleanup-tag", "--yes"], check=False)
+        run_cmd(["gh", "release", "delete", release_tag, "--cleanup-tag", "--yes", "--repo", gh_repo], check=False)
         
     # 收集需要上传的文件
     upload_files = []

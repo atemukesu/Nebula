@@ -41,6 +41,8 @@ package com.atemukesu.nebula.client.mixin;
 import com.atemukesu.nebula.Nebula;
 import com.atemukesu.nebula.client.ClientAnimationManager;
 import com.atemukesu.nebula.client.bridge.IrisBridge;
+import com.atemukesu.nebula.client.config.ModConfig;
+import com.atemukesu.nebula.client.enums.RenderPipeline;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.render.*;
 import net.minecraft.client.util.math.MatrixStack;
@@ -108,6 +110,11 @@ public class NebulaWorldRendererMixin {
         Matrix4f modelView = matrices.peek().getPositionMatrix();
         
         *///? }
+
+                if (ModConfig.getInstance().getRenderPipeline() == RenderPipeline.VANILLA_BATCH) {
+                        ClientAnimationManager.getInstance().updateParticlePositions(camera, this.frustum, tickDelta);
+                        return;
+                }
 
                 // 1. Check Iris via Bridge
                 if (!IrisBridge.getInstance().isIrisRenderingActive()) {

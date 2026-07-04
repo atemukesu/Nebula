@@ -41,6 +41,7 @@ package com.atemukesu.nebula.client.loader;
 import com.atemukesu.nebula.Nebula;
 import com.atemukesu.nebula.client.render.ParticleTextureManager;
 import com.atemukesu.nebula.client.render.SharedTextureResource;
+import com.atemukesu.nebula.client.render.SoAFrameData;
 import com.atemukesu.nebula.client.render.TextureAtlasMap;
 import com.atemukesu.nebula.client.render.TextureCacheSystem;
 import com.atemukesu.nebula.particle.data.NblHeader;
@@ -103,6 +104,8 @@ public class NblStreamer implements Runnable {
     private final ParticleStateData state = new ParticleStateData(4096);
 
     private final BlockingQueue<ByteBuffer> gpuBufferQueue;
+    private final BlockingQueue<SoAFrameData> vanillaFrameDataQueue;
+    private final boolean outputVanillaFrames;
     private final AtomicBoolean isRunning = new AtomicBoolean(true);
     private volatile boolean isFinished = false;
 
@@ -130,8 +133,13 @@ public class NblStreamer implements Runnable {
     private static final int PARALLEL_THRESHOLD = 5000;
 
     public NblStreamer(File nblFile, SharedTextureResource resource) throws IOException {
+        this(nblFile, resource, false);
+    }
+
+    public NblStreamer(File nblFile, SharedTextureResource resource, boolean outputVanillaFrames) throws IOException {
         this.file = nblFile;
         this.textureResource = resource;
+        this.outputVanillaFrames = outputVanillaFrames;
         // 增加引用计数 (Streamer 开始使用)
         if (this.textureResource != null) {
             this.textureResource.grab();
@@ -141,6 +149,7 @@ public class NblStreamer implements Runnable {
         this.textureMap = resource != null ? resource.getMap() : TextureAtlasMap.EMPTY;
 
         this.gpuBufferQueue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
+        this.vanillaFrameDataQueue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
         parseHeader();
     }
 
@@ -169,8 +178,12 @@ public class NblStreamer implements Runnable {
             textureEntries.clear();
             for (int i = 0; i < textureCount; i++) {
                 int pathLen = readUnsignedShortLE(raf);
-                // Skip path bytes + rows (1 byte) + cols (1 byte)
-                raf.skipBytes(pathLen + 2);
+                byte[] pathBytes = new byte[pathLen];
+                raf.readFully(pathBytes);
+                int rows = raf.read() & 0xFF;
+                int cols = raf.read() & 0xFF;
+                textureEntries.add(new ParticleTextureManager.TextureEntry(
+                        new String(pathBytes, StandardCharsets.UTF_8), rows, cols));
             }
 
             this.frameOffsets = new long[totalFrames];
@@ -320,6 +333,8 @@ public class NblStreamer implements Runnable {
                         // 清空管道里的旧数据
                         gpuBufferQueue.forEach(NblStreamer::releaseBuffer);
                         gpuBufferQueue.clear();
+                        vanillaFrameDataQueue.forEach(SoAFrameData::release);
+                        vanillaFrameDataQueue.clear();
                     }
                 }
 
@@ -397,7 +412,7 @@ public class NblStreamer implements Runnable {
                 ByteBuffer gpuBuffer = processFrameData(cachedDecompressedBuffer, isSkipping, currentFrameIdx);
 
                 // 只有不跳过的时候，才塞入队列
-                if (!isSkipping && gpuBuffer != null) {
+                if (!isSkipping && !outputVanillaFrames && gpuBuffer != null) {
                     try {
                         gpuBufferQueue.put(gpuBuffer);
                     } catch (InterruptedException e) {
@@ -412,7 +427,13 @@ public class NblStreamer implements Runnable {
                 // 结束处理
                 if (currentFrameIdx >= totalFrames) {
                     try {
-                        gpuBufferQueue.put(BufferUtils.createByteBuffer(0)); // EOF
+                        if (outputVanillaFrames) {
+                            SoAFrameData eofFrame = SoAFrameData.obtain(0);
+                            eofFrame.eof = true;
+                            vanillaFrameDataQueue.put(eofFrame);
+                        } else {
+                            gpuBufferQueue.put(BufferUtils.createByteBuffer(0)); // EOF
+                        }
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                         break;
@@ -450,21 +471,35 @@ public class NblStreamer implements Runnable {
         int particleCount = data.getInt();
 
         ByteBuffer gpuBuffer = null;
-        if (!skipOutput) {
+        SoAFrameData vanillaFrameData = null;
+        if (!skipOutput && !outputVanillaFrames) {
             // [修改] 申请 48 字节/粒子的缓冲区 (SSBO std430)
             int requiredSize = particleCount * 48;
             gpuBuffer = acquireBuffer(requiredSize);
+        } else if (!skipOutput && outputVanillaFrames) {
+            vanillaFrameData = SoAFrameData.obtain(particleCount);
+            vanillaFrameData.count = particleCount;
         }
 
         if (frameType == 0)
-            processIFrame(data, particleCount, gpuBuffer, frameIdx);
+            processIFrame(data, particleCount, gpuBuffer, vanillaFrameData, frameIdx);
         else
-            processPFrame(data, particleCount, gpuBuffer, frameIdx);
+            processPFrame(data, particleCount, gpuBuffer, vanillaFrameData, frameIdx);
+
+        if (vanillaFrameData != null) {
+            try {
+                vanillaFrameDataQueue.put(vanillaFrameData);
+            } catch (InterruptedException e) {
+                vanillaFrameData.release();
+                Thread.currentThread().interrupt();
+            }
+        }
 
         return gpuBuffer;
     }
 
-    private void processIFrame(ByteBuffer data, int particleCount, ByteBuffer gpuBuffer, int frameIdx) {
+    private void processIFrame(ByteBuffer data, int particleCount, ByteBuffer gpuBuffer,
+            SoAFrameData vanillaFrameData, int frameIdx) {
         // [优化] 计算所有字段的偏移量，避免循环内重复计算
         final int baseOffset = data.position();
         int N = particleCount;
@@ -517,10 +552,13 @@ public class NblStreamer implements Runnable {
 
             if (bufferAddr != 0)
                 writeParticleToGpuDirect(bufferAddr, i, id, state);
+            if (vanillaFrameData != null)
+                writeParticleToVanillaFrame(vanillaFrameData, i, id, state);
         }
     }
 
-    private void processPFrame(ByteBuffer data, int particleCount, ByteBuffer gpuBuffer, int frameIdx) {
+    private void processPFrame(ByteBuffer data, int particleCount, ByteBuffer gpuBuffer,
+            SoAFrameData vanillaFrameData, int frameIdx) {
         final int baseOffset = data.position();
         int N = particleCount;
         // P-Frame 偏移计算 (final for lambda)
@@ -604,10 +642,13 @@ public class NblStreamer implements Runnable {
             if (bufferAddr != 0) {
                 writeParticleToGpuDirect(bufferAddr, i, id, state);
             }
+            if (vanillaFrameData != null) {
+                writeParticleToVanillaFrame(vanillaFrameData, i, id, state);
+            }
         };
 
         // 决策：并行 vs 串行
-        if (particleCount >= PARALLEL_THRESHOLD) {
+        if (vanillaFrameData == null && particleCount >= PARALLEL_THRESHOLD) {
             try {
                 // 使用 ForkJoinPool 执行并行流
                 PARALLEL_POOL.submit(() -> IntStream.range(0, particleCount).parallel().forEach(processParticle)).get(); // 阻塞等待完成
@@ -663,6 +704,66 @@ public class NblStreamer implements Runnable {
     }
 
     // 内部类：粒子状态数据 (SoA Layout)
+    private void writeParticleToVanillaFrame(SoAFrameData frameData, int index, int id, ParticleStateData state) {
+        frameData.prevX[index] = state.prevX[id];
+        frameData.prevY[index] = state.prevY[id];
+        frameData.prevZ[index] = state.prevZ[id];
+        frameData.curX[index] = state.x[id];
+        frameData.curY[index] = state.y[id];
+        frameData.curZ[index] = state.z[id];
+        frameData.sizes[index] = state.size[id];
+        frameData.colorsPacked[index] = ((state.a[id] & 0xFF) << 24) |
+                ((state.b[id] & 0xFF) << 16) |
+                ((state.g[id] & 0xFF) << 8) |
+                (state.r[id] & 0xFF);
+        frameData.texLayers[index] = textureMap.getLayer(state.tex[id] & 0xFF, state.seq[id] & 0xFF);
+        frameData.texs[index] = state.tex[id];
+        frameData.seqs[index] = state.seq[id];
+    }
+
+    private SoAFrameData collectLiveParticles(int frameIdx) {
+        final ParticleStateData s = state;
+        final int capacity = s.capacity;
+
+        int liveCount = 0;
+        for (int id = 0; id < capacity; id++) {
+            if (s.lastSeenFrame[id] == frameIdx) {
+                liveCount++;
+            }
+        }
+        if (liveCount == 0) {
+            return null;
+        }
+
+        SoAFrameData snapshot = SoAFrameData.obtain(liveCount);
+        snapshot.count = liveCount;
+
+        int outIdx = 0;
+        for (int id = 0; id < capacity && outIdx < liveCount; id++) {
+            if (s.lastSeenFrame[id] != frameIdx) {
+                continue;
+            }
+
+            snapshot.prevX[outIdx] = s.prevX[id];
+            snapshot.prevY[outIdx] = s.prevY[id];
+            snapshot.prevZ[outIdx] = s.prevZ[id];
+            snapshot.curX[outIdx] = s.x[id];
+            snapshot.curY[outIdx] = s.y[id];
+            snapshot.curZ[outIdx] = s.z[id];
+            snapshot.sizes[outIdx] = s.size[id];
+            snapshot.colorsPacked[outIdx] = ((s.a[id] & 0xFF) << 24) |
+                    ((s.b[id] & 0xFF) << 16) |
+                    ((s.g[id] & 0xFF) << 8) |
+                    (s.r[id] & 0xFF);
+            snapshot.texLayers[outIdx] = textureMap.getLayer(s.tex[id] & 0xFF, s.seq[id] & 0xFF);
+            snapshot.texs[outIdx] = s.tex[id];
+            snapshot.seqs[outIdx] = s.seq[id];
+            outIdx++;
+        }
+
+        return snapshot;
+    }
+
     private static class ParticleStateData {
         public float[] x, y, z;
         public float[] prevX, prevY, prevZ;
@@ -767,6 +868,11 @@ public class NblStreamer implements Runnable {
         gpuBufferQueue.drainTo(cleanupList);
         for (ByteBuffer buf : cleanupList)
             releaseBuffer(buf);
+
+        List<SoAFrameData> vanillaCleanupList = new ArrayList<>();
+        vanillaFrameDataQueue.drainTo(vanillaCleanupList);
+        for (SoAFrameData data : vanillaCleanupList)
+            data.release();
             
         // 【关键】通知主线程释放纹理引用
         if (this.textureResource != null) {
@@ -778,6 +884,10 @@ public class NblStreamer implements Runnable {
 
     public BlockingQueue<ByteBuffer> getQueue() {
         return gpuBufferQueue;
+    }
+
+    public BlockingQueue<SoAFrameData> getVanillaQueue() {
+        return vanillaFrameDataQueue;
     }
 
     public void loadTextures() {
@@ -814,6 +924,10 @@ public class NblStreamer implements Runnable {
      */
     public float[] getBboxMax() {
         return bboxMax;
+    }
+
+    public List<ParticleTextureManager.TextureEntry> getTextures() {
+        return textureEntries;
     }
 
     /**

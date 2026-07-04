@@ -40,22 +40,32 @@ package com.atemukesu.nebula.client;
 
 import com.atemukesu.nebula.client.enums.BlendMode;
 import com.atemukesu.nebula.client.enums.CullingBehavior;
+import com.atemukesu.nebula.client.enums.RenderPipeline;
 import com.atemukesu.nebula.client.gui.tools.PerformanceStats;
 import com.atemukesu.nebula.Nebula;
 import com.atemukesu.nebula.client.loader.NblStreamer;
+import com.atemukesu.nebula.client.mixin.ParticleManagerAccessor;
+import com.atemukesu.nebula.client.particle.NebulaParticle;
 import com.atemukesu.nebula.client.render.AnimationFrame;
 import com.atemukesu.nebula.client.render.GpuParticleRenderer;
 import com.atemukesu.nebula.client.render.ParticleTextureManager;
 import com.atemukesu.nebula.client.render.SharedTextureResource;
+import com.atemukesu.nebula.client.render.SoAFrameData;
 import com.atemukesu.nebula.client.render.TextureCacheSystem;
 import com.atemukesu.nebula.client.util.IrisUtil;
 import com.atemukesu.nebula.client.util.CurrentTimeUtil;
 import com.atemukesu.nebula.client.config.ModConfig;
 import com.atemukesu.nebula.particle.loader.AnimationLoader;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.particle.Particle;
+import net.minecraft.client.particle.ParticleManager;
+import net.minecraft.client.particle.ParticleTextureSheet;
 import net.minecraft.client.render.Camera;
 import net.minecraft.client.render.Frustum;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
+import net.minecraft.client.texture.Sprite;
+import net.minecraft.client.texture.SpriteAtlasTexture;
+import net.minecraft.util.Identifier;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
 import com.mojang.blaze3d.platform.GlStateManager;
@@ -69,8 +79,11 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Queue;
 
 /**
  * 客户端动画管理器
@@ -191,6 +204,10 @@ public class ClientAnimationManager {
 
         // [Config Control] 如果不在 Replay 渲染模式且配置关闭了游戏内渲染，则跳过
         if (!CurrentTimeUtil.isRendering() && !config.shouldRenderInGame()) {
+            return;
+        }
+
+        if (config.getRenderPipeline() == RenderPipeline.VANILLA_BATCH) {
             return;
         }
 
@@ -390,6 +407,10 @@ public class ClientAnimationManager {
             return;
         }
 
+        if (config.getRenderPipeline() == RenderPipeline.VANILLA_BATCH) {
+            return;
+        }
+
         // 没有粒子，跳过
         if (this.getInstanceCount() == 0) {
             return;
@@ -581,9 +602,262 @@ public class ClientAnimationManager {
         }
     }
 
+    public void updateParticlePositions(Camera camera, Frustum frustum, float tickDelta) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.world == null || client.player == null) {
+            return;
+        }
+
+        ModConfig config = ModConfig.getInstance();
+        if (config.getRenderPipeline() != RenderPipeline.VANILLA_BATCH) {
+            return;
+        }
+        if (!CurrentTimeUtil.isRendering() && !config.shouldRenderInGame()) {
+            return;
+        }
+        if (this.getInstanceCount() == 0) {
+            return;
+        }
+
+        if (!hasLoggedStandardRenderPath) {
+            Nebula.LOGGER.info("[Nebula/Render] Using vanilla particle manager render path.");
+            hasLoggedStandardRenderPath = true;
+        }
+
+        boolean shouldCollectStats = config.getShowDebugHud();
+        PerformanceStats stats = null;
+        if (shouldCollectStats) {
+            stats = PerformanceStats.getInstance();
+            stats.beginFrame();
+        }
+
+        List<AnimationInstance> renderList;
+        synchronized (activeInstances) {
+            renderList = new ArrayList<>(activeInstances);
+        }
+
+        String texturePath = "nebula:textures/particle/nebula_particle.png";
+        if (renderList.size() > 0) {
+            AnimationInstance firstInstance = renderList.get(0);
+            if (firstInstance.streamer != null) {
+                List<ParticleTextureManager.TextureEntry> entries = firstInstance.streamer.getTextures();
+                if (entries != null && !entries.isEmpty()) {
+                    texturePath = entries.get(0).path;
+                }
+            }
+        }
+
+        Sprite sprite = getDynamicVanillaSprite(client, texturePath);
+        if (sprite == null) {
+            return;
+        }
+
+        CullingBehavior behavior = config.getCullingBehavior();
+        double now = CurrentTimeUtil.getCurrentAnimationTime();
+        ParticleManager particleManager = client.particleManager;
+        int totalParticles = 0;
+        int renderedInstancesCount = 0;
+
+        for (AnimationInstance instance : renderList) {
+            boolean isVisible = true;
+            Box worldBbox = instance.getWorldBoundingBox();
+            if (frustum != null && worldBbox != null && !frustum.isVisible(worldBbox)) {
+                isVisible = false;
+            }
+
+            instance.ensureTexturesLoaded();
+            if (!isVisible && behavior == CullingBehavior.PAUSE_AND_HIDE) {
+                continue;
+            }
+
+            double elapsed = now - instance.startSeconds;
+            SoAFrameData frameData = instance.getNextVanillaFrame();
+            if (isVisible && frameData != null) {
+                int particleCount = frameData.count;
+                totalParticles += particleCount;
+
+                double currentFrameFloat = elapsed * instance.targetFps;
+                float partialTicks = (float) (currentFrameFloat - (instance.renderedFrames - 1));
+                if (partialTicks < 0) {
+                    partialTicks = 0;
+                }
+                if (partialTicks > 1) {
+                    partialTicks = 1;
+                }
+
+                updateVanillaParticles(
+                        particleManager,
+                        instance,
+                        sprite,
+                        frameData,
+                        partialTicks);
+                if (particleCount > 0) {
+                    renderedInstancesCount++;
+                }
+            }
+        }
+
+        currentParticleCount = totalParticles;
+
+        if (shouldCollectStats && stats != null) {
+            stats.setParticleCount(totalParticles);
+            stats.setInstanceCount(renderedInstancesCount);
+            stats.setEmissiveStrength(1.0f);
+            stats.endFrame();
+        }
+    }
+
+    private static Sprite getDynamicVanillaSprite(MinecraftClient client, String rawPath) {
+        SpriteAtlasTexture atlas = ((ParticleManagerAccessor) client.particleManager).nebula$getParticleAtlasTexture();
+        if (atlas == null) {
+            return null;
+        }
+
+        String namespace = "minecraft";
+        String resourcePath = rawPath;
+
+        if (rawPath != null && rawPath.contains(":")) {
+            String[] parts = rawPath.split(":", 2);
+            namespace = parts[0];
+            resourcePath = parts[1];
+        }
+
+        if (resourcePath.startsWith("textures/particle/")) {
+            resourcePath = resourcePath.substring(18);
+        }
+        if (resourcePath.endsWith(".png")) {
+            resourcePath = resourcePath.substring(0, resourcePath.length() - 4);
+        }
+
+        //? if >= 1.21 {
+        Identifier spriteId = Identifier.of(namespace, resourcePath);
+        //? } else {
+        /*Identifier spriteId = new Identifier(namespace, resourcePath);*///?}
+
+        Sprite sprite = atlas.getSprite(spriteId);
+
+        if (sprite == null || sprite.getContents().getId().getPath().equals("missingno")) {
+            //? if >= 1.21 {
+            sprite = atlas.getSprite(Identifier.of(Nebula.MOD_ID, "nebula_particle"));
+            //? } else {
+            /*sprite = atlas.getSprite(new Identifier(Nebula.MOD_ID, "nebula_particle"));*///?}
+            
+            if (sprite == null) {
+                Nebula.LOGGER.warn("[Nebula/Render] Missing fallback sprite: {}:nebula_particle", Nebula.MOD_ID);
+            }
+        }
+
+        return sprite;
+    }
+
+    private void updateVanillaParticles(ParticleManager particleManager, AnimationInstance instance,
+            Sprite sprite, SoAFrameData frameData, float partialTicks) {
+        instance.initVanillaSprites(MinecraftClient.getInstance());
+        
+        Vec3d origin = instance.getOrigin();
+        int particleCount = frameData.count;
+
+        synchronized (instance.vanillaParticles) {
+            int currentSize = instance.vanillaParticles.size();
+            
+            if (currentSize < particleCount) {
+                List<NebulaParticle> newParticles = new ArrayList<>(particleCount - currentSize);
+                for (int i = currentSize; i < particleCount; i++) {
+                    NebulaParticle particle;
+                    if (!instance.particlePool.isEmpty()) {
+                        particle = instance.particlePool.remove(instance.particlePool.size() - 1);
+                        particle.resurrect(origin.x, origin.y, origin.z);
+                    } else {
+                        particle = new NebulaParticle(
+                                MinecraftClient.getInstance().world,
+                                origin.x,
+                                origin.y,
+                                origin.z,
+                                sprite);
+                    }
+                    newParticles.add(particle);
+                    instance.vanillaParticles.add(particle);
+                }
+                addVanillaParticlesBatch(particleManager, newParticles, particleCount);
+            }
+
+            while (instance.vanillaParticles.size() > particleCount) {
+                NebulaParticle particle = instance.vanillaParticles.remove(instance.vanillaParticles.size() - 1);
+                particle.markDead();
+                instance.particlePool.add(particle);
+            }
+
+            for (int i = 0; i < particleCount; i++) {
+                float prevX = frameData.prevX[i];
+                float prevY = frameData.prevY[i];
+                float prevZ = frameData.prevZ[i];
+                float curX = frameData.curX[i];
+                float curY = frameData.curY[i];
+                float curZ = frameData.curZ[i];
+
+                double x = origin.x + prevX + (curX - prevX) * partialTicks;
+                double y = origin.y + prevY + (curY - prevY) * partialTicks;
+                double z = origin.z + prevZ + (curZ - prevZ) * partialTicks;
+
+                instance.vanillaParticles.get(i).setFrameData(x, y, z,
+                        frameData.sizes[i],
+                        frameData.colorsPacked[i]);
+
+                int texIdx = frameData.texs[i] & 0xFF;
+                int seqIdx = frameData.seqs[i] & 0xFF;
+
+                if (instance.vanillaSprites != null && texIdx < instance.vanillaSprites.length) {
+                    instance.vanillaParticles.get(i).setTextureData(
+                        instance.vanillaSprites[texIdx],
+                        instance.vanillaCols[texIdx],
+                        instance.vanillaRows[texIdx],
+                        seqIdx
+                    );
+                }
+            }
+        }
+    }
+
     /**
      * 清除所有动画实例
      */
+    private void addVanillaParticleDirect(ParticleManager particleManager, Particle particle, int expectedCount) {
+        Map<ParticleTextureSheet, Queue<Particle>> particles =
+                ((ParticleManagerAccessor) particleManager).nebula$getParticles();
+        ParticleTextureSheet sheet = particle.getType();
+        Queue<Particle> queue = particles.get(sheet);
+        if (!(queue instanceof ArrayDeque)) {
+            ArrayDeque<Particle> expandedQueue = new ArrayDeque<>(Math.max(expectedCount, 16384));
+            if (queue != null) {
+                expandedQueue.addAll(queue);
+            }
+            queue = expandedQueue;
+            particles.put(sheet, queue);
+        }
+        queue.add(particle);
+    }
+
+    private void addVanillaParticlesBatch(ParticleManager particleManager, List<NebulaParticle> newParticles, int expectedCount) {
+        Map<ParticleTextureSheet, Queue<Particle>> particles =
+                ((ParticleManagerAccessor) particleManager).nebula$getParticles();
+        ParticleTextureSheet sheet = ParticleTextureSheet.PARTICLE_SHEET_TRANSLUCENT;
+        Queue<Particle> queue = particles.get(sheet);
+        
+        if (!(queue instanceof ArrayDeque)) {
+            ArrayDeque<Particle> expandedQueue = new ArrayDeque<>(Math.max(expectedCount, 16384));
+            if (queue != null) {
+                expandedQueue.addAll(queue);
+            }
+            queue = expandedQueue;
+            particles.put(sheet, queue);
+        }
+        
+        ArrayDeque<Particle> deque = (ArrayDeque<Particle>) queue;
+        for (NebulaParticle particle : newParticles) {
+            deque.add(particle);
+        }
+    }
+
     public void clearAllInstances() {
         synchronized (activeInstances) {
             for (AnimationInstance instance : activeInstances) {
@@ -623,9 +897,17 @@ public class ClientAnimationManager {
 
         // 缓存的帧数据
         private ByteBuffer lastFrameData;
+        private SoAFrameData lastVanillaFrameData;
+        private final List<NebulaParticle> vanillaParticles = new ArrayList<>();
+        private final List<NebulaParticle> particlePool = new ArrayList<>();
 
         // 【架构变更】持有共享纹理资源
         private final SharedTextureResource textureResource;
+
+        public Sprite[] vanillaSprites;
+        public int[] vanillaCols;
+        public int[] vanillaRows;
+        private boolean vanillaSpritesInitialized = false;
 
         public AnimationInstance(File file, Vec3d origin, SharedTextureResource resource) throws IOException {
             this.file = file;
@@ -635,7 +917,7 @@ public class ClientAnimationManager {
             this.texturesLoaded = true;
 
             // 创建 Streamer (Streamer 也会持有 resource 引用)
-            this.streamer = new NblStreamer(file, textureResource);
+            this.streamer = new NblStreamer(file, textureResource, isVanillaPipeline());
             this.targetFps = streamer.getTargetFps();
         }
 
@@ -656,11 +938,16 @@ public class ClientAnimationManager {
                 NblStreamer.releaseBuffer(lastFrameData);
                 lastFrameData = null;
             }
+            if (lastVanillaFrameData != null) {
+                lastVanillaFrameData.release();
+                lastVanillaFrameData = null;
+            }
+            clearVanillaParticles();
 
             // 重新创建 Streamer 以便重置状态
             try {
                 if (isStarted) {
-                    this.streamer = new NblStreamer(file, textureResource);
+                    this.streamer = new NblStreamer(file, textureResource, isVanillaPipeline());
                 }
             } catch (IOException e) {
                 Nebula.LOGGER.error("Failed to restart animation stream", e);
@@ -683,6 +970,26 @@ public class ClientAnimationManager {
             if (!texturesLoaded) {
                 texturesLoaded = true;
             }
+        }
+
+        public void initVanillaSprites(MinecraftClient client) {
+            if (vanillaSpritesInitialized || streamer == null) return;
+            
+            List<ParticleTextureManager.TextureEntry> entries = streamer.getTextures();
+            if (entries == null || entries.isEmpty()) return;
+            
+            int size = entries.size();
+            vanillaSprites = new Sprite[size];
+            vanillaCols = new int[size];
+            vanillaRows = new int[size];
+
+            for (int i = 0; i < size; i++) {
+                ParticleTextureManager.TextureEntry entry = entries.get(i);
+                vanillaSprites[i] = getDynamicVanillaSprite(client, entry.path);
+                vanillaCols[i] = entry.cols;
+                vanillaRows[i] = entry.rows;
+            }
+            vanillaSpritesInitialized = true;
         }
 
         public int getTextureId() {
@@ -789,6 +1096,93 @@ public class ClientAnimationManager {
             return lastFrameData;
         }
 
+        public SoAFrameData getNextVanillaFrame() {
+            if (!isStarted || isFinished) {
+                return null;
+            }
+
+            Double replayTime = CurrentTimeUtil.getReplayTime();
+            double now = CurrentTimeUtil.getCurrentAnimationTime();
+            double elapsed = now - startSeconds;
+            int totalFrames = streamer.getTotalFrames();
+            double duration = (double) totalFrames / targetFps;
+
+            if (replayTime != null && elapsed < 0) {
+                stop();
+                return null;
+            }
+
+            if (elapsed > duration) {
+                stop();
+                return null;
+            }
+
+            int expectedFrame = (int) Math.ceil(elapsed * targetFps);
+            if (expectedFrame < 0) {
+                expectedFrame = 0;
+            }
+            if (expectedFrame >= totalFrames) {
+                expectedFrame = totalFrames;
+            }
+
+            if (Math.abs(renderedFrames - expectedFrame) > 30) {
+                streamer.seek(expectedFrame);
+                renderedFrames = expectedFrame;
+            }
+
+            SoAFrameData newData = null;
+
+            if (CurrentTimeUtil.isRendering()) {
+                if (renderedFrames < expectedFrame) {
+                    try {
+                        newData = streamer.getVanillaQueue().take();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return null;
+                    }
+                }
+            } else {
+                int framesToCatchUp = expectedFrame - renderedFrames;
+                if (expectedFrame >= totalFrames && !isFinished) {
+                    framesToCatchUp = Math.max(framesToCatchUp, 1);
+                }
+                int maxCatchUp = Math.min(framesToCatchUp, 5);
+
+                for (int i = 0; i < maxCatchUp; i++) {
+                    SoAFrameData temp = streamer.getVanillaQueue().poll();
+                    if (temp == null) {
+                        break;
+                    }
+                    if (newData != null) {
+                        newData.release();
+                        renderedFrames++;
+                    }
+                    newData = temp;
+                }
+
+                if (newData == null && renderedFrames == 0 && !streamer.getVanillaQueue().isEmpty()) {
+                    newData = streamer.getVanillaQueue().poll();
+                }
+            }
+
+            if (newData != null) {
+                if (newData.eof) {
+                    stop();
+                    newData.release();
+                    return null;
+                }
+
+                if (lastVanillaFrameData != null) {
+                    lastVanillaFrameData.release();
+                }
+
+                lastVanillaFrameData = newData;
+                renderedFrames++;
+            }
+
+            return lastVanillaFrameData;
+        }
+
         public void stop() {
             if (isFinished)
                 return;
@@ -802,12 +1196,30 @@ public class ClientAnimationManager {
                 NblStreamer.releaseBuffer(lastFrameData);
                 lastFrameData = null;
             }
+            if (lastVanillaFrameData != null) {
+                lastVanillaFrameData.release();
+                lastVanillaFrameData = null;
+            }
+            clearVanillaParticles();
 
             // 释放纹理资源引用 (Reference Counting)
             // 只有当实例彻底销毁时才释放
             if (textureResource != null) {
                 TextureCacheSystem.release(textureResource);
             }
+        }
+
+        private void clearVanillaParticles() {
+            synchronized (vanillaParticles) {
+                for (NebulaParticle particle : vanillaParticles) {
+                    particle.markDead();
+                }
+                vanillaParticles.clear();
+            }
+        }
+
+        private boolean isVanillaPipeline() {
+            return ModConfig.getInstance().getRenderPipeline() == RenderPipeline.VANILLA_BATCH;
         }
 
         public boolean isFinished() {

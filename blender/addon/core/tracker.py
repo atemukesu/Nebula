@@ -510,6 +510,7 @@ class NativeParticleTracker(BaseTracker):
         self.psys_name = psys_name
         self.is_world_space = True
         self.tex_id = 0
+        self.fallback_color = np.array([255, 255, 255, 255], dtype=np.uint8)
 
     def prepare(
         self, eval_obj, settings, mat_map, image_cache, report_fn=None, mesh=None
@@ -520,8 +521,56 @@ class NativeParticleTracker(BaseTracker):
             slot_idx = psys.settings.material - 1
             if slot_idx >= 0 and slot_idx < len(eval_obj.material_slots):
                 mat = eval_obj.material_slots[slot_idx].material
-                if mat and mat.name in mat_map:
-                    self.tex_id = mat_map[mat.name]
+                if mat:
+                    if mat.name in mat_map:
+                        self.tex_id = mat_map[mat.name]
+                    color = self._extract_mat_color(mat)
+                    self.fallback_color = (np.array(color) * 255).astype(np.uint8)
+                    print(
+                        f"[Nebula] {self.name}: Mat={mat.name}, "
+                        f"fallback_color=RGBA({self.fallback_color})"
+                    )
+
+    @staticmethod
+    def _extract_mat_color(mat):
+        """Extract a fallback color from common material shader nodes."""
+        if not (mat.use_nodes and mat.node_tree):
+            if hasattr(mat, "diffuse_color"):
+                c = mat.diffuse_color
+                return [c[0], c[1], c[2], 1.0]
+            return [1.0, 1.0, 1.0, 1.0]
+
+        nodes = mat.node_tree.nodes
+        shader_color_inputs = {
+            "BSDF_PRINCIPLED": ["Base Color"],
+            "EMISSION": ["Color"],
+            "BSDF_DIFFUSE": ["Color"],
+            "BSDF_GLOSSY": ["Color"],
+            "BSDF_TOON": ["Color"],
+            "BSDF_HAIR_PRINCIPLED": ["Color"],
+        }
+
+        output = next((n for n in nodes if n.type == "OUTPUT_MATERIAL"), None)
+        if output:
+            surface = output.inputs.get("Surface")
+            if surface and surface.is_linked:
+                linked_node = surface.links[0].from_node
+                inputs_to_check = shader_color_inputs.get(linked_node.type)
+                if inputs_to_check:
+                    for input_name in inputs_to_check:
+                        inp = linked_node.inputs.get(input_name)
+                        if inp and not inp.is_linked:
+                            return tuple(inp.default_value[:4])
+
+        for node in nodes:
+            inputs_to_check = shader_color_inputs.get(node.type)
+            if inputs_to_check:
+                for input_name in inputs_to_check:
+                    inp = node.inputs.get(input_name)
+                    if inp and not inp.is_linked:
+                        return tuple(inp.default_value[:4])
+
+        return [1.0, 1.0, 1.0, 1.0]
 
     def get_data(self, eval_obj, mesh=None):
         psys = eval_obj.particle_systems.get(self.psys_name)
@@ -533,15 +582,35 @@ class NativeParticleTracker(BaseTracker):
         if count == 0:
             return None
 
-        pos = np.zeros((count, 3), dtype=np.float32)
-        particles.foreach_get("location", pos.ravel())
+        pos_all = np.zeros((count, 3), dtype=np.float32)
+        particles.foreach_get("location", pos_all.ravel())
 
-        size = np.zeros(count, dtype=np.float32)
-        particles.foreach_get("size", size)
+        size_all = np.zeros(count, dtype=np.float32)
+        particles.foreach_get("size", size_all)
 
-        col = np.full((count, 4), 255, dtype=np.uint8)
-        tex = np.full(count, self.tex_id, dtype=np.uint8)
-        pid = np.arange(count, dtype=np.int32)
+        has_color_attr = hasattr(particles[0], "color") if count > 0 else False
+
+        alive_mask = np.zeros(count, dtype=bool)
+        for i, p in enumerate(particles):
+            alive_mask[i] = p.alive_state == "ALIVE"
+
+        alive_count = alive_mask.sum()
+        if alive_count == 0:
+            return None, None, None, None, None
+
+        pos = pos_all[alive_mask]
+        size = size_all[alive_mask]
+
+        if has_color_attr:
+            col_all = np.empty((count, 4), dtype=np.float32)
+            for i, p in enumerate(particles):
+                col_all[i] = p.color
+            col = (col_all[alive_mask] * 255).astype(np.uint8)
+        else:
+            col = np.tile(self.fallback_color, (alive_count, 1))
+
+        tex = np.full(alive_count, self.tex_id, dtype=np.uint8)
+        pid = np.arange(alive_count, dtype=np.int32)
 
         return pos, col, size, tex, pid
 

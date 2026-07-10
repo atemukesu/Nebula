@@ -41,7 +41,6 @@ package com.atemukesu.nebula.client.bridge;
 import com.atemukesu.nebula.Nebula;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.fabricmc.loader.api.FabricLoader;
-import net.irisshaders.iris.api.v0.IrisApi;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL30;
 
@@ -67,6 +66,8 @@ public class IrisBridge {
     // Reflection handles (Util usage)
     private Class<?> irisInternalClass;
     private Method getPipelineManagerMethod;
+    private Object irisApiInstance;
+    private Method isShaderPackInUseMethod;
 
     // Caches (Util usage)
     private final Map<Class<?>, Field> fboFieldCache = new ConcurrentHashMap<>();
@@ -88,8 +89,12 @@ public class IrisBridge {
     public boolean isIrisRenderingActive() {
         if (!isIrisInstalled())
             return false;
+        initReflection();
+        if (irisApiInstance == null || isShaderPackInUseMethod == null) {
+            return false;
+        }
         try {
-            return IrisApi.getInstance().isShaderPackInUse();
+            return (boolean) isShaderPackInUseMethod.invoke(irisApiInstance);
         } catch (Throwable t) {
             return false;
         }
@@ -104,6 +109,11 @@ public class IrisBridge {
             return;
 
         try {
+            Class<?> irisApiClass = Class.forName("net.irisshaders.iris.api.v0.IrisApi");
+            Method getIrisApiMethod = irisApiClass.getMethod("getInstance");
+            irisApiInstance = getIrisApiMethod.invoke(null);
+            isShaderPackInUseMethod = irisApiClass.getMethod("isShaderPackInUse");
+
             // Common: Iris.getPipelineManager()
             irisInternalClass = Class.forName("net.irisshaders.iris.Iris");
             getPipelineManagerMethod = irisInternalClass.getMethod("getPipelineManager");

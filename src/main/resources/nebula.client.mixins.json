@@ -6,7 +6,8 @@
 		"ExampleClientMixin",
 		"ParticleManagerAccessor",
 		"VideoRendererMixin",
-		"NebulaWorldRendererMixin"
+		"NebulaWorldRendererMixin",
+		"MixinTransformPatcher"
 	],
 	"injectors": {
 		"defaultRequire": 1

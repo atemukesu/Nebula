@@ -61,6 +61,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 import java.util.stream.Collectors;
 import com.atemukesu.nebula.client.util.IrisUtil;
+import com.atemukesu.nebula.client.shader.IrisShaderToggle;
 
 /**
  * GPU 粒子渲染器 (PMB)
@@ -403,6 +404,7 @@ public class GpuParticleRenderer {
         globalOitCleared = false;
 
         // 2. 正确重置 Shader (必须通知 RenderSystem！)
+        IrisShaderToggle.setActive(false);
         GL20.glUseProgram(0);
         RenderSystem.setShader(() -> null);
 
@@ -482,6 +484,7 @@ public class GpuParticleRenderer {
         // Upload Uniforms
         uploadMatrix(uModelViewMat, modelViewMatrix);
         uploadMatrix(uProjMat, projMatrix);
+        IrisShaderToggle.setActive(true);
         if (uOrigin != -1)
             GL20.glUniform3f(uOrigin, originX, originY, originZ);
         if (uPartialTicks != -1)
@@ -624,6 +627,7 @@ public class GpuParticleRenderer {
         // Upload Common Uniforms
         uploadMatrix(uModelViewMat, modelViewMatrix);
         uploadMatrix(uProjMat, projMatrix);
+        IrisShaderToggle.setActive(true);
         
         // 移除 CameraRight 和 CameraUp 的上传，因为 Shader 现在使用视空间 Billboarding
         // if (uCameraRight != -1)
@@ -667,6 +671,7 @@ public class GpuParticleRenderer {
         RenderSystem.enableCull();
 
         // 3. Reset Shader
+        IrisShaderToggle.setActive(false);
         GL20.glUseProgram(0);
         RenderSystem.setShader(() -> null);
 

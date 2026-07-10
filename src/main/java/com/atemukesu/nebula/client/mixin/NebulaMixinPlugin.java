@@ -24,7 +24,7 @@
  *
  * This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
  * without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details <https://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details <https://www.gnu.org/licenses/>。
  *
  * 中文版：
  * 本程序为自由软件：您可以根据自由软件基金会发布的 GNU 通用公共许可协议（GPL）条款
@@ -38,30 +38,26 @@
 
 package com.atemukesu.nebula.client.mixin;
 
+import com.atemukesu.nebula.Nebula;
 import net.fabricmc.loader.api.FabricLoader;
 import org.objectweb.asm.tree.ClassNode;
 import org.spongepowered.asm.mixin.extensibility.IMixinConfigPlugin;
 import org.spongepowered.asm.mixin.extensibility.IMixinInfo;
-
-import com.atemukesu.nebula.Nebula;
 
 import java.util.List;
 import java.util.Set;
 
 /**
  * Mixin 插件，用于实现对可选 Mod 的"软依赖"。
- * 
- * 核心作用是在应用 Mixin 之前进行检查，确保只在目标 Mod 存在时，
- * 针对它们的 Mixin 才会被应用，从而避免 ClassNotFoundException 导致游戏崩溃。
- * 
+ *
  * 当前支持的软依赖：
  * - Replay Mod: VideoRendererMixin
+ * - Iris: MixinTransformPatcher
  */
 public class NebulaMixinPlugin implements IMixinConfigPlugin {
 
     @Override
     public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
-        // === Replay Mod 软依赖 ===
         if (mixinClassName.endsWith("VideoRendererMixin")) {
             boolean replayModLoaded = FabricLoader.getInstance().isModLoaded("replaymod");
             if (replayModLoaded) {
@@ -72,7 +68,16 @@ public class NebulaMixinPlugin implements IMixinConfigPlugin {
             return replayModLoaded;
         }
 
-        // 对于所有其他的 Mixin，总是应用
+        if (mixinClassName.endsWith("MixinTransformPatcher")) {
+            boolean irisLoaded = FabricLoader.getInstance().isModLoaded("iris");
+            if (irisLoaded) {
+                Nebula.LOGGER.info("[Nebula/Mixin] ✓ Iris detected. Applying mixin: {}", mixinClassName);
+            } else {
+                Nebula.LOGGER.debug("[Nebula/Mixin] Iris not found. Skipping mixin: {}", mixinClassName);
+            }
+            return irisLoaded;
+        }
+
         return true;
     }
 

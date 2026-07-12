@@ -42,6 +42,7 @@ import com.atemukesu.nebula.client.enums.BlendMode;
 import com.atemukesu.nebula.client.enums.CullingBehavior;
 import com.atemukesu.nebula.client.enums.RenderPipeline;
 import com.atemukesu.nebula.client.render.GpuParticleRenderer;
+import com.atemukesu.nebula.client.util.IrisUtil;
 
 import net.minecraft.client.MinecraftClient;
 
@@ -61,6 +62,9 @@ public class ModConfig {
     private float emissiveStrength;
     private CullingBehavior cullingBehavior;
     
+    // 调试选项
+    private boolean saveInjectedCode;
+    
     // 测试选项
     private boolean syncSingleplayerAnimations;
 
@@ -77,6 +81,8 @@ public class ModConfig {
         // 默认使用用户自定义的亮度
         this.emissiveStrength = 2.0f;
         this.cullingBehavior = CullingBehavior.SIMULATE_ONLY;
+        // 默认关闭保存注入后的着色器代码
+        this.saveInjectedCode = false;
         // 默认关闭单人模式动画同步（测试用）
         this.syncSingleplayerAnimations = false;
     }
@@ -132,13 +138,26 @@ public class ModConfig {
     }
 
     /**
+     * Shaderpack framebuffers cannot use Nebula's Alpha/Additive/OIT paths
+     * safely.  Iris therefore uses the dedicated depth-priority path instead;
+     * the configured blend mode is preserved for non-Iris rendering.
+     */
+    public boolean isIrisDepthPriority() {
+        return getRenderPipeline() == RenderPipeline.GPU && IrisUtil.isIrisRenderingActive();
+    }
+
+    public BlendMode getEffectiveBlendMode() {
+        return isIrisDepthPriority() ? BlendMode.ALPHA : getBlendMode();
+    }
+
+    /**
      * 设置粒子混合模式
      */
     public void setBlendMode(BlendMode blendMode) {
         this.blendMode = blendMode;
         // 预加载 OIT
         MinecraftClient client = MinecraftClient.getInstance();
-        if (this.blendMode == BlendMode.OIT && client.getWindow() != null) {
+        if (this.blendMode == BlendMode.OIT && !isIrisDepthPriority() && client.getWindow() != null) {
             int w = client.getWindow().getFramebufferWidth();
             int h = client.getWindow().getFramebufferHeight();
             if (w > 0 && h > 0) {
@@ -194,6 +213,14 @@ public class ModConfig {
      */
     public void setCullingBehavior(CullingBehavior cullingBehavior) {
         this.cullingBehavior = cullingBehavior;
+    }
+
+    public boolean getSaveInjectedCode() {
+        return this.saveInjectedCode;
+    }
+
+    public void setSaveInjectedCode(Boolean saveInjectedCode) {
+        this.saveInjectedCode = saveInjectedCode;
     }
     
     /**

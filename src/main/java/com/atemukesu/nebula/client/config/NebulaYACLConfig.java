@@ -52,6 +52,7 @@ import net.minecraft.text.Text;
 public class NebulaYACLConfig {
         public static Screen createConfigScreen(Screen parent) {
                 ModConfig config = ModConfig.getInstance();
+                boolean irisDepthPriority = config.isIrisDepthPriority();
 
                 return YetAnotherConfigLib.createBuilder()
                                 .title(Text.translatable("gui.nebula.config.title"))
@@ -107,6 +108,18 @@ public class NebulaYACLConfig {
                                                                                 config::setSyncSingleplayerAnimations)
                                                                 .controller(BooleanControllerBuilder::create)
                                                                 .build())
+                                                .option(Option.<Boolean>createBuilder()
+                                                                .name(Text.translatable(
+                                                                                "gui.nebula.config.save_injected_code"))
+                                                                .description(OptionDescription
+                                                                                .of(Text.translatable(
+                                                                                                "gui.nebula.config.save_injected_code.desc")))
+                                                                .binding(
+                                                                                false,
+                                                                                config::getSaveInjectedCode,
+                                                                                config::setSaveInjectedCode)
+                                                                .controller(BooleanControllerBuilder::create)
+                                                                .build())
                                                 .build())
                                 .category(ConfigCategory.createBuilder()
                                                 .name(Text.translatable("gui.nebula.config.category.rendering"))
@@ -126,16 +139,19 @@ public class NebulaYACLConfig {
                                                                 .build())
                                                 .option(Option.<BlendMode>createBuilder()
                                                                 .name(Text.translatable("gui.nebula.config.blend_mode"))
-                                                                .description(OptionDescription.of(Text.translatable(
-                                                                                "gui.nebula.config.blend_mode.desc")))
+                                                                .description(OptionDescription.of(irisDepthPriority
+                                                                                ? Text.translatable("gui.nebula.config.blend_mode.depth_priority.desc")
+                                                                                : Text.translatable("gui.nebula.config.blend_mode.desc")))
                                                                 .binding(
                                                                                 BlendMode.ALPHA,
                                                                                 config::getBlendMode,
                                                                                 config::setBlendMode)
                                                                 .controller(opt -> EnumControllerBuilder.create(opt)
                                                                                 .enumClass(BlendMode.class)
-                                                                                .formatValue(mode -> Text.translatable(
-                                                                                                mode.getTranslationKey())))
+                                                                                .formatValue(mode -> irisDepthPriority
+                                                                                                ? Text.translatable("gui.nebula.config.blend_mode.depth_priority")
+                                                                                                : Text.translatable(mode.getTranslationKey())))
+                                                                .available(!irisDepthPriority)
                                                                 .build())
                                                 .option(Option.<CullingBehavior>createBuilder()
                                                                 .name(Text.translatable(

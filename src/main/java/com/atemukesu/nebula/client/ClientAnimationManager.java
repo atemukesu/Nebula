@@ -39,6 +39,7 @@
 package com.atemukesu.nebula.client;
 
 import com.atemukesu.nebula.client.enums.BlendMode;
+import com.atemukesu.nebula.client.bridge.IrisBridge;
 import com.atemukesu.nebula.client.enums.CullingBehavior;
 import com.atemukesu.nebula.client.enums.RenderPipeline;
 import com.atemukesu.nebula.client.gui.tools.PerformanceStats;
@@ -218,10 +219,10 @@ public class ClientAnimationManager {
 
         // 记录日志
         if (bindFramebuffer && !hasLoggedStandardRenderPath) {
-            Nebula.LOGGER.info("[Nebula/Render] ✓ Rendering via Mixin (standard mode).");
+            Nebula.LOGGER.info("[Nebula/Render] Rendering via Mixin (standard mode).");
             hasLoggedStandardRenderPath = true;
         } else if (!bindFramebuffer && !hasLoggedIrisRenderPath) {
-            Nebula.LOGGER.info("[Nebula/Render] ✓ Rendering via Mixin (Iris mode).");
+            Nebula.LOGGER.info("[Nebula/Render] Rendering via Mixin (Iris mode).");
             hasLoggedIrisRenderPath = true;
         }
 
@@ -258,19 +259,25 @@ public class ClientAnimationManager {
         }
 
         // Global OIT Setup or Standard Batch Setup
-        boolean isOIT = config.getBlendMode() == BlendMode.OIT;
+        boolean isOIT = config.getEffectiveBlendMode() == BlendMode.OIT;
+        boolean useExternalProgram = IrisUtil.isIrisRenderingActive();
         CullingBehavior behavior = config.getCullingBehavior();
         double now = CurrentTimeUtil.getCurrentAnimationTime();
         int targetFboId = -1;
+        boolean irisParticlePhaseActive = false;
+        try {
         if (!renderList.isEmpty()) {
+            if (useExternalProgram) {
+                irisParticlePhaseActive = IrisBridge.getInstance().beginParticlePhase();
+            }
             if (isOIT) {
                 targetFboId = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
                 GpuParticleRenderer.beginOIT(targetFboId, client.getWindow().getFramebufferWidth(),
-                        client.getWindow().getFramebufferHeight());
+                        client.getWindow().getFramebufferHeight(), useExternalProgram);
             } else {
                 int currentFbo = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
                 GpuParticleRenderer.beginStandardRendering(mvMatrix, projectionMatrix,
-                        currentFbo);
+                        currentFbo, useExternalProgram);
             }
         }
 
@@ -371,11 +378,16 @@ public class ClientAnimationManager {
             stats.endFrame();
         }
 
-        if (!renderList.isEmpty()) {
-            if (isOIT) {
-                GpuParticleRenderer.endOITAndComposite(targetFboId);
-            } else {
-                GpuParticleRenderer.endStandardRendering();
+            if (!renderList.isEmpty()) {
+                if (isOIT) {
+                    GpuParticleRenderer.endOITAndComposite(targetFboId);
+                } else {
+                    GpuParticleRenderer.endStandardRendering();
+                }
+            }
+        } finally {
+            if (irisParticlePhaseActive) {
+                IrisBridge.getInstance().endParticlePhase();
             }
         }
     }
@@ -424,7 +436,7 @@ public class ClientAnimationManager {
 
         // 记录标准渲染路径日志（只记录一次）
         if (!hasLoggedStandardRenderPath) {
-            Nebula.LOGGER.info("[Nebula/Render] ✓ Using standard render path (WorldRenderEvents.LAST).");
+            Nebula.LOGGER.info("[Nebula/Render] Using standard render path (WorldRenderEvents.LAST).");
             hasLoggedStandardRenderPath = true;
         }
 
@@ -471,7 +483,7 @@ public class ClientAnimationManager {
         }
 
         // Global OIT Setup or Standard Batch Setup
-        boolean isOIT = config.getBlendMode() == BlendMode.OIT;
+        boolean isOIT = config.getEffectiveBlendMode() == BlendMode.OIT;
         CullingBehavior behavior = config.getCullingBehavior();
         double now = CurrentTimeUtil.getCurrentAnimationTime();
         int targetFboId = -1;
@@ -600,6 +612,16 @@ public class ClientAnimationManager {
             stats.setEmissiveStrength(effectiveEmissive);
             stats.endFrame();
         }
+    }
+
+    public void renderTickFromParticlePhase(Camera camera, float tickDelta) {
+        if (!IrisUtil.isIrisRenderingActive()) {
+            return;
+        }
+        Matrix4f modelViewMatrix = new Matrix4f();
+        modelViewMatrix.rotate(camera.getRotation().conjugate(new Quaternionf()));
+        Matrix4f projectionMatrix = RenderSystem.getProjectionMatrix();
+        renderTickMixin(modelViewMatrix, projectionMatrix, camera, null, false);
     }
 
     public void updateParticlePositions(Camera camera, Frustum frustum, float tickDelta) {

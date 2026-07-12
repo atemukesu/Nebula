@@ -249,7 +249,7 @@ public class NebulaClient implements ClientModInitializer {
         //? }
 
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
-            if (ModConfig.getInstance().getBlendMode() == BlendMode.OIT) {
+            if (ModConfig.getInstance().getEffectiveBlendMode() == BlendMode.OIT) {
                 int w = client.getWindow().getFramebufferWidth();
                 int h = client.getWindow().getFramebufferHeight();
                 GpuParticleRenderer.preloadOIT(w, h);

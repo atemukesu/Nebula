@@ -73,8 +73,11 @@ public class NebulaWorldRendererMixin {
     private static boolean hasLoggedIrisPath = false;
     @Unique
     private static boolean hasLoggedStandardPath = false;
+    @Unique
+    private static boolean hasLoggedIrisFallbackPath = false;
 
     @Inject(method = "render", at = @At(value = "INVOKE",
+            shift = At.Shift.AFTER,
             //? if < 1.21 {
             
             /*target = "Lnet/minecraft/client/particle/ParticleManager;renderParticles(Lnet/minecraft/client/util/math/MatrixStack;Lnet/minecraft/client/render/VertexConsumerProvider$Immediate;Lnet/minecraft/client/render/LightmapTextureManager;Lnet/minecraft/client/render/Camera;F)V"
@@ -121,45 +124,7 @@ public class NebulaWorldRendererMixin {
                         return;
                 }
 
-                int previousFBO = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
-                boolean isIrisMode = false;
-
-                // 2. Bind Iris Translucent FBO via Bridge (Unified)
-                if (IrisBridge.getInstance().bindTranslucentFramebuffer()) {
-                        isIrisMode = true;
-
-                        if (!hasLoggedIrisPath) {
-                                Nebula.LOGGER.info("[Nebula/Render] ✓ Using Iris render path (Mixin + Iris FBO).");
-                                hasLoggedIrisPath = true;
-                                hasLoggedStandardPath = false;
-                        }
-                }
-
-                if (!isIrisMode) {
-                        return;
-                }
-
-                // 4. 渲染状态设置
-                RenderSystem.enableBlend();
-                RenderSystem.defaultBlendFunc();
-                RenderSystem.disableCull();
-                RenderSystem.depthMask(false);
-
-                // 5. 执行渲染
-                // Iris 模式传入 bindFramebuffer=false (保持 Iris FBO)
-                ClientAnimationManager.getInstance().renderTickMixin(
-                                modelView,
-                                projection,
-                                camera,
-                                this.frustum,
-                                false); // Iris 模式不绑定 MC 主 FBO
-
-                // 6. 恢复状态
-                RenderSystem.enableCull();
-                RenderSystem.depthMask(true);
-
-                // 恢复 FBO
-                GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, previousFBO);
+                return;
         }
 
 }

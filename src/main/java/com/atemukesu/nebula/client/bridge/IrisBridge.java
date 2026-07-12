@@ -42,6 +42,7 @@ import com.atemukesu.nebula.Nebula;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.fabricmc.loader.api.FabricLoader;
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
 
 import java.lang.reflect.Field;
@@ -62,12 +63,32 @@ public class IrisBridge {
     private Method getSodiumPipelineMethod; // getSodiumTerrainPipeline
     private Method getTranslucentFbMethod; // getTranslucentFramebuffer
     private Method bindFbMethod; // GlFramebuffer.bind
+    private Method pipelineSetPhaseMethod;
+    private Class<?> pipelineSetPhaseOwner;
+    private Class<?> worldRenderingPhaseClass;
+    private Object particlesPhase;
+    private Object nonePhase;
 
     // Reflection handles (Util usage)
     private Class<?> irisInternalClass;
     private Method getPipelineManagerMethod;
     private Object irisApiInstance;
     private Method isShaderPackInUseMethod;
+    private Method getParticleTranslucentShaderMethod;
+    private Method getShaderMapMethod;
+    private Method getShaderMethod;
+    private Object particleOpaqueShaderKey;
+    private Object activeParticleShader;
+    private final Map<Class<?>, Method> shaderBindMethodCache = new ConcurrentHashMap<>();
+    private final Map<Class<?>, Method> shaderUnbindMethodCache = new ConcurrentHashMap<>();
+    private boolean loggedSodiumFramebufferBinding = false;
+    private boolean loggedGenericFramebufferBinding = false;
+    private boolean loggedFramebufferBindingFailure = false;
+    private boolean loggedParticleShaderBinding = false;
+    private boolean loggedParticleShaderNoProgram = false;
+    private boolean loggedParticleShaderBindingFailure = false;
+    private boolean loggedParticlePhaseBinding = false;
+    private boolean loggedParticlePhaseFailure = false;
 
     // Caches (Util usage)
     private final Map<Class<?>, Field> fboFieldCache = new ConcurrentHashMap<>();
@@ -114,6 +135,19 @@ public class IrisBridge {
             irisApiInstance = getIrisApiMethod.invoke(null);
             isShaderPackInUseMethod = irisApiClass.getMethod("isShaderPackInUse");
 
+            Class<?> shaderAccessClass = Class.forName("net.irisshaders.iris.pipeline.programs.ShaderAccess");
+            getParticleTranslucentShaderMethod = shaderAccessClass.getMethod("getParticleTranslucentShader");
+
+            // ShaderAccess only exposes PARTICLES_TRANS.  Resolve PARTICLES through
+            // the public pipeline shader map so opaque and translucent particles do
+            // not get forced into the same Iris render target.
+            Class<?> shaderRenderingPipelineClass = Class.forName("net.irisshaders.iris.pipeline.ShaderRenderingPipeline");
+            Class<?> shaderKeyClass = Class.forName("net.irisshaders.iris.pipeline.programs.ShaderKey");
+            Class<?> shaderMapClass = Class.forName("net.irisshaders.iris.pipeline.programs.ShaderMap");
+            getShaderMapMethod = shaderRenderingPipelineClass.getMethod("getShaderMap");
+            getShaderMethod = shaderMapClass.getMethod("getShader", shaderKeyClass);
+            particleOpaqueShaderKey = shaderKeyClass.getField("PARTICLES").get(null);
+
             // Common: Iris.getPipelineManager()
             irisInternalClass = Class.forName("net.irisshaders.iris.Iris");
             getPipelineManagerMethod = irisInternalClass.getMethod("getPipelineManager");
@@ -123,6 +157,12 @@ public class IrisBridge {
                 Class<?> managerClass = irisPipelineManager.getClass();
                 getPipelineMethod = managerClass.getMethod("getPipelineNullable");
             }
+
+            worldRenderingPhaseClass = Class.forName("net.irisshaders.iris.pipeline.WorldRenderingPhase");
+            @SuppressWarnings({"unchecked", "rawtypes"})
+            Class phaseEnumClass = worldRenderingPhaseClass.asSubclass(Enum.class);
+            particlesPhase = Enum.valueOf(phaseEnumClass, "PARTICLES");
+            nonePhase = Enum.valueOf(phaseEnumClass, "NONE");
 
             // Mixin specific targets
             try {
@@ -155,9 +195,163 @@ public class IrisBridge {
 
     public boolean bindTranslucentFramebuffer() {
         if (attemptBindSodiumTranslucentFramebuffer()) {
+            if (!loggedSodiumFramebufferBinding) {
+                Nebula.LOGGER.info("[Nebula/IrisBridge] Bound Iris translucent framebuffer via Sodium pipeline.");
+                loggedSodiumFramebufferBinding = true;
+            }
             return true;
         }
-        return bindIrisTranslucentFramebufferGeneric();
+        boolean bound = bindIrisTranslucentFramebufferGeneric();
+        if (bound) {
+            if (!loggedGenericFramebufferBinding) {
+                Nebula.LOGGER.info("[Nebula/IrisBridge] Bound Iris translucent framebuffer via generic reflection path.");
+                loggedGenericFramebufferBinding = true;
+            }
+        } else if (!loggedFramebufferBindingFailure) {
+            Nebula.LOGGER.warn("[Nebula/IrisBridge] Failed to bind a dedicated Iris translucent framebuffer; falling back to current framebuffer.");
+            loggedFramebufferBindingFailure = true;
+        }
+        return bound;
+    }
+
+    public boolean bindParticleTranslucentShader() {
+        return bindParticleShader(true) > 0;
+    }
+
+    /**
+     * Binds Iris' real opaque/translucent particle program and returns its GL id.
+     */
+    public int bindParticleShader(boolean translucent) {
+        if (!available) {
+            return 0;
+        }
+        initReflection();
+        if (getParticleTranslucentShaderMethod == null || getPipelineMethod == null) {
+            return 0;
+        }
+
+        try {
+            Object shader;
+            if (translucent) {
+                shader = getParticleTranslucentShaderMethod.invoke(null);
+            } else {
+                Object pipeline = getPipelineMethod.invoke(irisPipelineManager);
+                if (pipeline == null || getShaderMapMethod == null || getShaderMethod == null || particleOpaqueShaderKey == null) {
+                    return 0;
+                }
+                Object shaderMap = getShaderMapMethod.invoke(pipeline);
+                shader = getShaderMethod.invoke(shaderMap, particleOpaqueShaderKey);
+            }
+            if (shader == null) {
+                return 0;
+            }
+            Method bindMethod = shaderBindMethodCache.computeIfAbsent(
+                    shader.getClass(),
+                    clazz -> findNoArgMethod(clazz, "bind", "method_34586"));
+            if (bindMethod == null) {
+                return 0;
+            }
+            bindMethod.invoke(shader);
+            int activeProgram = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
+            if (activeProgram <= 0) {
+                activeParticleShader = null;
+                if (!loggedParticleShaderNoProgram) {
+                    Nebula.LOGGER.warn("[Nebula/IrisBridge] Iris particle shader bind completed without an active GL program.");
+                    loggedParticleShaderNoProgram = true;
+                }
+                return 0;
+            }
+            activeParticleShader = shader;
+            if (!loggedParticleShaderBinding) {
+                Nebula.LOGGER.info("[Nebula/IrisBridge] Bound Iris particle translucent shader: {}", shader.getClass().getName());
+                loggedParticleShaderBinding = true;
+            }
+            return activeProgram;
+        } catch (Exception e) {
+            if (!loggedParticleShaderBindingFailure) {
+                Nebula.LOGGER.warn("[Nebula/IrisBridge] Failed to bind Iris particle translucent shader: {}", e.toString());
+                loggedParticleShaderBindingFailure = true;
+            }
+            return 0;
+        }
+    }
+
+    public boolean beginParticlePhase() {
+        boolean phaseSet = setWorldRenderingPhase(particlesPhase);
+        boolean shaderBound = bindParticleTranslucentShader();
+        if (phaseSet && shaderBound && !loggedParticlePhaseBinding) {
+            Nebula.LOGGER.info("[Nebula/IrisBridge] Entered Iris PARTICLES phase and bound particles_trans shader.");
+            loggedParticlePhaseBinding = true;
+        }
+        return phaseSet || shaderBound;
+    }
+
+    public void endParticlePhase() {
+        unbindParticleTranslucentShader();
+        setWorldRenderingPhase(nonePhase);
+    }
+
+    private boolean setWorldRenderingPhase(Object phase) {
+        if (!available || phase == null) {
+            return false;
+        }
+        initReflection();
+        if (irisPipelineManager == null || getPipelineMethod == null || worldRenderingPhaseClass == null) {
+            return false;
+        }
+        try {
+            Object pipeline = getPipelineMethod.invoke(irisPipelineManager);
+            if (pipeline == null) {
+                return false;
+            }
+            if (pipelineSetPhaseMethod == null || pipelineSetPhaseOwner != pipeline.getClass()) {
+                pipelineSetPhaseMethod = pipeline.getClass().getMethod("setPhase", worldRenderingPhaseClass);
+                pipelineSetPhaseMethod.setAccessible(true);
+                pipelineSetPhaseOwner = pipeline.getClass();
+            }
+            pipelineSetPhaseMethod.invoke(pipeline, phase);
+            return true;
+        } catch (Exception e) {
+            if (!loggedParticlePhaseFailure) {
+                Nebula.LOGGER.warn("[Nebula/IrisBridge] Failed to set Iris particle phase: {}", e.toString());
+                loggedParticlePhaseFailure = true;
+            }
+            return false;
+        }
+    }
+
+    public void unbindParticleTranslucentShader() {
+        Object shader = activeParticleShader;
+        activeParticleShader = null;
+        if (shader == null) {
+            return;
+        }
+        try {
+            Method unbindMethod = shaderUnbindMethodCache.computeIfAbsent(
+                    shader.getClass(),
+                    clazz -> findNoArgMethod(clazz, "unbind", "method_34585"));
+            if (unbindMethod != null) {
+                unbindMethod.invoke(shader);
+            }
+        } catch (Exception e) {
+            Nebula.LOGGER.debug("[Nebula/IrisBridge] Failed to unbind Iris particle shader: {}", e.toString());
+        }
+    }
+
+    private Method findNoArgMethod(Class<?> type, String... names) {
+        Class<?> current = type;
+        while (current != null) {
+            for (String name : names) {
+                try {
+                    Method method = current.getDeclaredMethod(name);
+                    method.setAccessible(true);
+                    return method;
+                } catch (NoSuchMethodException ignored) {
+                }
+            }
+            current = current.getSuperclass();
+        }
+        return null;
     }
 
     /**

@@ -14,7 +14,7 @@ struct Particle {
     float pad1, pad2, pad3;
 };
 
-layout(std430, binding = 0) buffer ParticleBuffer {
+layout(std430, binding = 12) buffer ParticleBuffer {
     Particle particles[];
 };
 

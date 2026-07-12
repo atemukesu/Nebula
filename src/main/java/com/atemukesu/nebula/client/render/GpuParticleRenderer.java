@@ -61,6 +61,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 import java.util.stream.Collectors;
 import com.atemukesu.nebula.client.util.IrisUtil;
+import com.atemukesu.nebula.client.bridge.IrisBridge;
 import com.atemukesu.nebula.client.shader.IrisShaderToggle;
 
 /**
@@ -123,7 +124,8 @@ public class GpuParticleRenderer {
     private static int uOitAccum = -1;
     private static int uOitReveal = -1;
 
-    private static final int SSBO_BINDING_INDEX = 0;
+    private static final int SSBO_BINDING_INDEX = 12;
+    private static final int IRIS_PARTICLE_TEXTURE_UNIT = 15;
 
     // 临时矩阵缓冲
     private static final FloatBuffer matrixBuffer = BufferUtils.createFloatBuffer(16);
@@ -308,13 +310,21 @@ public class GpuParticleRenderer {
     private static int globalOitViewportHeight = 0;
     private static final int[] oitCachedViewport = new int[4];
 
+    private static boolean hasLoggedIrisOitBatch = false;
+    private static boolean hasLoggedStandardBatch = false;
+    private static boolean oitUsesExternalProgram = false;
+
     /**
      * 开始 OIT 全局阶段
      * 必须在批量绘制粒子之前调用。
      * 只做初始化，不立即绑定 OIT FBO（因为 Pass 1 需要绘制到主 FBO）
      */
     public static void beginOIT(int targetFboId, int viewportWidth, int viewportHeight) {
-        if (!initialized || oitFbo == null || oitProgram <= 0)
+        beginOIT(targetFboId, viewportWidth, viewportHeight, false);
+    }
+
+    public static void beginOIT(int targetFboId, int viewportWidth, int viewportHeight, boolean useExternalProgram) {
+        if (!initialized || (!useExternalProgram && (oitFbo == null || oitProgram <= 0)))
             return;
 
         RenderSystem.assertOnRenderThread();
@@ -323,8 +333,14 @@ public class GpuParticleRenderer {
         globalOitTargetFboId = targetFboId;
         globalOitActive = true;
         globalOitCleared = false; // 新帧开始，重置清空标志
+        oitUsesExternalProgram = useExternalProgram;
         globalOitViewportWidth = viewportWidth;
         globalOitViewportHeight = viewportHeight;
+
+        if (oitUsesExternalProgram) {
+            GL11.glGetIntegerv(GL11.GL_VIEWPORT, oitCachedViewport);
+            return;
+        }
 
         // 调整 OIT FBO 大小
         oitFbo.resize(viewportWidth, viewportHeight);
@@ -352,10 +368,27 @@ public class GpuParticleRenderer {
      * @param targetFboId 目标 FBO ID
      */
     public static void endOITAndComposite(int targetFboId) {
-        if (!initialized || oitFbo == null || oitProgram <= 0)
+        if (!initialized || (!oitUsesExternalProgram && (oitFbo == null || oitProgram <= 0)))
             return;
 
         RenderSystem.assertOnRenderThread();
+
+        if (oitUsesExternalProgram) {
+            globalOitActive = false;
+            globalOitTargetFboId = -1;
+            globalOitCleared = false;
+            oitUsesExternalProgram = false;
+            IrisShaderToggle.setActive(IrisShaderToggle.currentProgram(), false);
+            GL13.glActiveTexture(GL13.GL_TEXTURE0 + IRIS_PARTICLE_TEXTURE_UNIT);
+            GL11.glBindTexture(GL30.GL_TEXTURE_2D_ARRAY, 0);
+            GL13.glActiveTexture(GL13.GL_TEXTURE0);
+            RenderSystem.defaultBlendFunc();
+            RenderSystem.enableCull();
+            RenderSystem.enableDepthTest();
+            RenderSystem.depthMask(true);
+            GL11.glViewport(oitCachedViewport[0], oitCachedViewport[1], oitCachedViewport[2], oitCachedViewport[3]);
+            return;
+        }
 
         // Pass 3: Composite
         if (!IrisUtil.isIrisRenderingActive() && targetFboId == MinecraftClient.getInstance().getFramebuffer().fbo) {
@@ -402,6 +435,7 @@ public class GpuParticleRenderer {
         globalOitActive = false;
         globalOitTargetFboId = -1;
         globalOitCleared = false;
+        oitUsesExternalProgram = false;
 
         // 2. 正确重置 Shader (必须通知 RenderSystem！)
         IrisShaderToggle.setActive(false);
@@ -451,7 +485,7 @@ public class GpuParticleRenderer {
         if (particleCount <= 0 || data == null || !initialized || !shaderCompiled)
             return;
 
-        if (!globalOitActive || oitFbo == null) {
+        if (!globalOitActive || (!oitUsesExternalProgram && oitFbo == null)) {
             Nebula.LOGGER.warn("[GpuParticleRenderer] renderOITBatch called without beginOIT!");
             return;
         }
@@ -469,7 +503,7 @@ public class GpuParticleRenderer {
         // Upload Data
         int ssbo;
         if (useFallback) {
-            ssbo = uploadDataFallback(data, dataSize);
+            ssbo = uploadDataFallback(data);
         } else {
             ssbo = uploadDataPMB(data, dataSize);
         }
@@ -478,80 +512,146 @@ public class GpuParticleRenderer {
         GL30.glBindVertexArray(vao);
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, SSBO_BINDING_INDEX, ssbo);
 
+        int activeProgram = oitUsesExternalProgram ? IrisShaderToggle.currentProgram() : shaderProgram;
+        float currentEmissive = IrisUtil.isIrisRenderingActive() ? ModConfig.getInstance().getEmissiveStrength() : 1.0f;
+
         // Use Particle Shader
-        GL20.glUseProgram(shaderProgram);
+        if (!oitUsesExternalProgram) {
+            GL20.glUseProgram(shaderProgram);
+            activeProgram = shaderProgram;
+        }
+        if (!hasLoggedIrisOitBatch) {
+            Nebula.LOGGER.info("[GpuParticleRenderer] OIT batch start: program={}, particles={}, targetFbo={}, irisActive={}, externalProgram={}",
+                    activeProgram, particleCount, globalOitTargetFboId, IrisUtil.isIrisRenderingActive(), oitUsesExternalProgram);
+            hasLoggedIrisOitBatch = true;
+        }
 
         // Upload Uniforms
-        uploadMatrix(uModelViewMat, modelViewMatrix);
-        uploadMatrix(uProjMat, projMatrix);
-        IrisShaderToggle.setActive(true);
-        if (uOrigin != -1)
+        if (oitUsesExternalProgram) {
+            IrisShaderToggle.bindParticleBufferBlock(activeProgram, SSBO_BINDING_INDEX);
+            IrisShaderToggle.uploadNebulaUniforms(activeProgram, modelViewMatrix, projMatrix, originX, originY, originZ, partialTicks);
+        } else {
+            uploadMatrix(uModelViewMat, modelViewMatrix);
+            uploadMatrix(uProjMat, projMatrix);
+        }
+        IrisShaderToggle.setActive(activeProgram, true);
+        if (uOrigin != -1 && !oitUsesExternalProgram)
             GL20.glUniform3f(uOrigin, originX, originY, originZ);
-        if (uPartialTicks != -1)
+        if (uPartialTicks != -1 && !oitUsesExternalProgram)
             GL20.glUniform1f(uPartialTicks, partialTicks);
 
         // 动态设置 HDR 强度: Iris 开启时使用用户自定义的亮度，关闭时保持原色(1.0)
-        // 移至此处以确保同时应用于 Pass 1 (Opaque) 和 Pass 2 (Translucent)
-        float currentEmissive = IrisUtil.isIrisRenderingActive() ? ModConfig.getInstance().getEmissiveStrength() : 1.0f;
-        if (uEmissiveStrength != -1)
+        if (oitUsesExternalProgram) {
+            IrisShaderToggle.uploadNebulaMaterialUniforms(activeProgram, useTexture && glTextureId > 0, currentEmissive, 0, IRIS_PARTICLE_TEXTURE_UNIT);
+        } else if (uEmissiveStrength != -1)
             GL20.glUniform1f(uEmissiveStrength, currentEmissive);
 
         // Textures
+        int textureUnit = oitUsesExternalProgram ? IRIS_PARTICLE_TEXTURE_UNIT : 0;
+        GL13.glActiveTexture(GL13.GL_TEXTURE0 + textureUnit);
         if (useTexture && glTextureId > 0) {
-            GL13.glActiveTexture(GL13.GL_TEXTURE0);
             GL11.glBindTexture(GL30.GL_TEXTURE_2D_ARRAY, glTextureId);
-            if (uSampler0 != -1)
-                GL20.glUniform1i(uSampler0, 0);
-            if (uUseTexture != -1)
-                GL20.glUniform1i(uUseTexture, 1);
+            if (!oitUsesExternalProgram) {
+                if (uSampler0 != -1)
+                    GL20.glUniform1i(uSampler0, 0);
+                if (uUseTexture != -1)
+                    GL20.glUniform1i(uUseTexture, 1);
+            }
         } else {
-            if (uUseTexture != -1)
+            GL11.glBindTexture(GL30.GL_TEXTURE_2D_ARRAY, 0);
+            if (!oitUsesExternalProgram && uUseTexture != -1)
                 GL20.glUniform1i(uUseTexture, 0);
         }
+        GL13.glActiveTexture(GL13.GL_TEXTURE0);
 
         RenderSystem.disableCull();
         RenderSystem.enableDepthTest();
         RenderSystem.depthFunc(GL11.GL_LEQUAL);
 
-        // ==========================================
-        // Pass 1: 不透明粒子 (Opaque)
-        // 目标: 主 FBO
-        // ==========================================
-        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, globalOitTargetFboId);
-        if (uRenderPass != -1)
-            GL20.glUniform1i(uRenderPass, 0); // Opaque Pass
+        if (oitUsesExternalProgram) {
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, globalOitTargetFboId);
+            int opaqueProgram = IrisBridge.getInstance().bindParticleShader(false);
+            if (opaqueProgram <= 0) {
+                opaqueProgram = activeProgram;
+                GL20.glUseProgram(opaqueProgram);
+            }
+            IrisShaderToggle.bindParticleBufferBlock(opaqueProgram, SSBO_BINDING_INDEX);
+            IrisShaderToggle.uploadNebulaUniforms(opaqueProgram, modelViewMatrix, projMatrix,
+                    originX, originY, originZ, partialTicks);
+            IrisShaderToggle.setActive(opaqueProgram, true);
+            IrisShaderToggle.uploadNebulaMaterialUniforms(
+                    opaqueProgram,
+                    useTexture && glTextureId > 0,
+                    currentEmissive,
+                    0,
+                    IRIS_PARTICLE_TEXTURE_UNIT);
+            RenderSystem.depthMask(true);
+            RenderSystem.enableBlend();
+            RenderSystem.blendFuncSeparate(
+                    GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA,
+                    GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
+            );
+            GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
 
-        RenderSystem.depthMask(true);
-        RenderSystem.enableBlend();
+            IrisShaderToggle.setActive(opaqueProgram, false);
+            int translucentProgram = IrisBridge.getInstance().bindParticleShader(true);
+            if (translucentProgram <= 0) {
+                translucentProgram = activeProgram;
+                GL20.glUseProgram(translucentProgram);
+            }
+            IrisShaderToggle.bindParticleBufferBlock(translucentProgram, SSBO_BINDING_INDEX);
+            IrisShaderToggle.uploadNebulaUniforms(translucentProgram, modelViewMatrix, projMatrix,
+                    originX, originY, originZ, partialTicks);
+            IrisShaderToggle.setActive(translucentProgram, true);
+            IrisShaderToggle.uploadNebulaMaterialUniforms(
+                    translucentProgram,
+                    useTexture && glTextureId > 0,
+                    currentEmissive,
+                    3,
+                    IRIS_PARTICLE_TEXTURE_UNIT);
+            RenderSystem.depthMask(false);
+            RenderSystem.enableBlend();
+            RenderSystem.blendFuncSeparate(
+                    GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA,
+                    GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
+            );
+            GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
+        } else {
+            // ==========================================
+            // Pass 1: 不透明粒子 (Opaque)
+            // 目标: 主 FBO
+            // ==========================================
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, globalOitTargetFboId);
+            if (uRenderPass != -1)
+                GL20.glUniform1i(uRenderPass, 0);
 
-        // 核心修复：分离混合，保护主 FBO 的 Alpha 通道不被污染
-        RenderSystem.blendFuncSeparate(
-                GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA,
-                GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
-        );
+            RenderSystem.depthMask(true);
+            RenderSystem.enableBlend();
+            RenderSystem.blendFuncSeparate(
+                    GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA,
+                    GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
+            );
+            GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
 
-        GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
-        // ==========================================
-        // Pass 2: 半透明粒子 (Translucent)
-        // 目标: OIT FBO
-        // ==========================================
-        oitFbo.bindAndShareDepth(globalOitTargetFboId);
-        // 只在第一个 batch 时清空 OIT FBO
-        if (!globalOitCleared) {
-            oitFbo.clear();
-            globalOitCleared = true;
+            // ==========================================
+            // Pass 2: 半透明粒子 (Translucent)
+            // 目标: OIT FBO
+            // ==========================================
+            oitFbo.bindAndShareDepth(globalOitTargetFboId);
+            if (!globalOitCleared) {
+                oitFbo.clear();
+                globalOitCleared = true;
+            }
+
+            if (uRenderPass != -1)
+                GL20.glUniform1i(uRenderPass, 1);
+
+            RenderSystem.depthMask(false);
+            RenderSystem.enableBlend();
+            GL40.glBlendFunci(0, GL11.GL_ONE, GL11.GL_ONE);
+            GL40.glBlendFunci(1, GL11.GL_ZERO, GL11.GL_ONE_MINUS_SRC_COLOR);
+            GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
         }
-
-        if (uRenderPass != -1)
-            GL20.glUniform1i(uRenderPass, 1); // Translucent Pass
-
-        RenderSystem.depthMask(false); // OIT 核心：不写深度
-        RenderSystem.enableBlend();
-        // OIT 专用混合模式
-        GL40.glBlendFunci(0, GL11.GL_ONE, GL11.GL_ONE); // Accum
-        GL40.glBlendFunci(1, GL11.GL_ZERO, GL11.GL_ONE_MINUS_SRC_COLOR); // Reveal
-
-        GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
 
         // Cleanup (部分，完整清理在 endOITAndComposite 中)
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, SSBO_BINDING_INDEX, 0);
@@ -583,8 +683,12 @@ public class GpuParticleRenderer {
 
     // Standard Batch Rendering State
     private static boolean standardBatchActive = false;
+    private static boolean standardBatchUsesExternalProgram = false;
+    private static int standardExternalProgram = -1;
     private static int standardRestoreFboId = -1;
     private static int[] standardViewport = new int[4];
+    private static Matrix4f standardExternalModelView;
+    private static Matrix4f standardExternalProjection;
 
     /**
      * 开始标准渲染批量 (Standard/Additive)
@@ -596,9 +700,12 @@ public class GpuParticleRenderer {
      * @param restoreFboId 渲染结束后需要恢复的 FBO ID。如果为 -1，则不执行恢复。
      */
     public static void beginStandardRendering(Matrix4f modelViewMatrix, Matrix4f projMatrix,
-            // 移除 cameraRight 和 cameraUp 参数，因为现在使用视空间 Billboarding
-            // float[] cameraRight, float[] cameraUp, 
             int restoreFboId) {
+        beginStandardRendering(modelViewMatrix, projMatrix, restoreFboId, false);
+    }
+
+    public static void beginStandardRendering(Matrix4f modelViewMatrix, Matrix4f projMatrix,
+            int restoreFboId, boolean useExternalProgram) {
         if (!initialized || !shaderCompiled)
             return;
 
@@ -610,7 +717,11 @@ public class GpuParticleRenderer {
         }
 
         standardBatchActive = true;
+        standardBatchUsesExternalProgram = useExternalProgram;
+        standardExternalProgram = -1;
         standardRestoreFboId = restoreFboId;
+        standardExternalModelView = modelViewMatrix == null ? null : new Matrix4f(modelViewMatrix);
+        standardExternalProjection = projMatrix == null ? null : new Matrix4f(projMatrix);
 
         // Backup Viewport
         GL11.glGetIntegerv(GL11.GL_VIEWPORT, standardViewport);
@@ -620,25 +731,39 @@ public class GpuParticleRenderer {
         RenderSystem.enableDepthTest();
         RenderSystem.depthFunc(GL11.GL_LEQUAL);
 
-        // Bind Shader & VAO
-        GL20.glUseProgram(shaderProgram);
+        int currentProgram = IrisShaderToggle.currentProgram();
+        if (standardBatchUsesExternalProgram) {
+            standardExternalProgram = currentProgram;
+            int blockIndex = GL43.glGetProgramResourceIndex(currentProgram, GL43.GL_SHADER_STORAGE_BLOCK, "NebulaParticleBuffer");
+            IrisShaderToggle.bindParticleBufferBlock(currentProgram, SSBO_BINDING_INDEX);
+            IrisShaderToggle.uploadNebulaUniforms(currentProgram, modelViewMatrix, projMatrix, 0.0f, 0.0f, 0.0f, 0.0f);
+        } else {
+            GL20.glUseProgram(shaderProgram);
+            currentProgram = shaderProgram;
+            uploadMatrix(uModelViewMat, modelViewMatrix);
+            uploadMatrix(uProjMat, projMatrix);
+        }
         GL30.glBindVertexArray(vao);
+        IrisShaderToggle.setActive(currentProgram, true);
+        if (!hasLoggedStandardBatch) {
+            Nebula.LOGGER.info("[GpuParticleRenderer] Standard batch ready: program={}, restoreFbo={}, irisActive={}, externalProgram={}",
+                    currentProgram, standardRestoreFboId, IrisUtil.isIrisRenderingActive(), standardBatchUsesExternalProgram);
+            hasLoggedStandardBatch = true;
+        }
 
-        // Upload Common Uniforms
-        uploadMatrix(uModelViewMat, modelViewMatrix);
-        uploadMatrix(uProjMat, projMatrix);
-        IrisShaderToggle.setActive(true);
-        
         // 移除 CameraRight 和 CameraUp 的上传，因为 Shader 现在使用视空间 Billboarding
         // if (uCameraRight != -1)
         //     GL20.glUniform3f(uCameraRight, cameraRight[0], cameraRight[1], cameraRight[2]);
         // if (uCameraUp != -1)
         //     GL20.glUniform3f(uCameraUp, cameraUp[0], cameraUp[1], cameraUp[2]);
 
-        // Emissive Strength
         float currentEmissive = IrisUtil.isIrisRenderingActive() ? ModConfig.getInstance().getEmissiveStrength() : 1.0f;
-        if (uEmissiveStrength != -1)
-            GL20.glUniform1f(uEmissiveStrength, currentEmissive);
+        if (standardBatchUsesExternalProgram) {
+            IrisShaderToggle.uploadNebulaMaterialUniforms(currentProgram, true, currentEmissive, 2, IRIS_PARTICLE_TEXTURE_UNIT);
+        } else {
+            if (uEmissiveStrength != -1)
+                GL20.glUniform1f(uEmissiveStrength, currentEmissive);
+        }
     }
 
     /**
@@ -670,10 +795,16 @@ public class GpuParticleRenderer {
         RenderSystem.depthMask(true);
         RenderSystem.enableCull();
 
-        // 3. Reset Shader
-        IrisShaderToggle.setActive(false);
-        GL20.glUseProgram(0);
-        RenderSystem.setShader(() -> null);
+        if (!standardBatchUsesExternalProgram) {
+            IrisShaderToggle.setActive(false);
+            GL20.glUseProgram(0);
+            RenderSystem.setShader(() -> null);
+        } else {
+            IrisShaderToggle.setActive(standardExternalProgram, false);
+            GL13.glActiveTexture(GL13.GL_TEXTURE0 + IRIS_PARTICLE_TEXTURE_UNIT);
+            GL11.glBindTexture(GL30.GL_TEXTURE_2D_ARRAY, 0);
+            GL13.glActiveTexture(GL13.GL_TEXTURE0);
+        }
 
         // 4. Restore Viewport
         GL11.glViewport(standardViewport[0], standardViewport[1], standardViewport[2], standardViewport[3]);
@@ -690,7 +821,10 @@ public class GpuParticleRenderer {
         }
 
         standardBatchActive = false;
+        standardExternalProgram = -1;
         standardRestoreFboId = -1;
+        standardExternalModelView = null;
+        standardExternalProjection = null;
     }
 
     /**
@@ -723,7 +857,7 @@ public class GpuParticleRenderer {
 
         int ssbo;
         if (useFallback) {
-            ssbo = uploadDataFallback(data, dataSize);
+            ssbo = uploadDataFallback(data);
         } else {
             ssbo = uploadDataPMB(data, dataSize);
         }
@@ -731,62 +865,126 @@ public class GpuParticleRenderer {
         // Bind SSBO
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, SSBO_BINDING_INDEX, ssbo);
 
-        // Upload Instance-Specific Uniforms
-        if (uOrigin != -1)
-            GL20.glUniform3f(uOrigin, originX, originY, originZ);
-        if (uPartialTicks != -1)
-            GL20.glUniform1f(uPartialTicks, partialTicks);
+        int activeProgram = standardBatchUsesExternalProgram ? standardExternalProgram : shaderProgram;
+        float currentEmissive = IrisUtil.isIrisRenderingActive() ? ModConfig.getInstance().getEmissiveStrength() : 1.0f;
+
+        if (standardBatchUsesExternalProgram) {
+            if (activeProgram <= 0) {
+                Nebula.LOGGER.warn("[GpuParticleRenderer] Skipping Iris standard batch because no external particle program was captured.");
+                return;
+            }
+            IrisShaderToggle.uploadNebulaUniforms(activeProgram, null, null, originX, originY, originZ, partialTicks);
+        } else {
+            if (uOrigin != -1)
+                GL20.glUniform3f(uOrigin, originX, originY, originZ);
+            if (uPartialTicks != -1)
+                GL20.glUniform1f(uPartialTicks, partialTicks);
+        }
 
         // Texture Binding
+        int textureUnit = standardBatchUsesExternalProgram ? IRIS_PARTICLE_TEXTURE_UNIT : 0;
+        GL13.glActiveTexture(GL13.GL_TEXTURE0 + textureUnit);
         if (useTexture && glTextureId > 0) {
-            GL13.glActiveTexture(GL13.GL_TEXTURE0);
             GL11.glBindTexture(GL30.GL_TEXTURE_2D_ARRAY, glTextureId);
-            if (uSampler0 != -1)
-                GL20.glUniform1i(uSampler0, 0);
-            if (uUseTexture != -1)
-                GL20.glUniform1i(uUseTexture, 1);
+            if (!standardBatchUsesExternalProgram) {
+                if (uSampler0 != -1)
+                    GL20.glUniform1i(uSampler0, 0);
+                if (uUseTexture != -1)
+                    GL20.glUniform1i(uUseTexture, 1);
+            }
         } else {
             GL11.glBindTexture(GL30.GL_TEXTURE_2D_ARRAY, 0);
-            if (uUseTexture != -1)
+            if (!standardBatchUsesExternalProgram && uUseTexture != -1)
                 GL20.glUniform1i(uUseTexture, 0);
         }
+        GL13.glActiveTexture(GL13.GL_TEXTURE0);
 
         // Drawing Passes (2-Pass: Opaque + Translucent)
         BlendMode blendMode = ModConfig.getInstance().getBlendMode();
 
-        // Pass 1: Opaque
-        if (uRenderPass != -1)
-            GL20.glUniform1i(uRenderPass, 0); // Opaque Pass
+        if (standardBatchUsesExternalProgram) {
+            int opaqueProgram = IrisBridge.getInstance().bindParticleShader(false);
+            if (opaqueProgram <= 0) {
+                opaqueProgram = activeProgram;
+                GL20.glUseProgram(opaqueProgram);
+            }
+            IrisShaderToggle.bindParticleBufferBlock(opaqueProgram, SSBO_BINDING_INDEX);
+            IrisShaderToggle.uploadNebulaUniforms(opaqueProgram, standardExternalModelView,
+                    standardExternalProjection, originX, originY, originZ, partialTicks);
+            IrisShaderToggle.setActive(opaqueProgram, true);
+            IrisShaderToggle.uploadNebulaMaterialUniforms(opaqueProgram, useTexture && glTextureId > 0, currentEmissive, 0, IRIS_PARTICLE_TEXTURE_UNIT);
+            RenderSystem.depthMask(true);
+            RenderSystem.enableBlend();
+            RenderSystem.blendFuncSeparate(
+                    GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA,
+                    GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
+            );
+            GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
 
-        RenderSystem.depthMask(true);
-        RenderSystem.enableBlend();
-        RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
+            IrisShaderToggle.setActive(opaqueProgram, false);
+            int translucentProgram = IrisBridge.getInstance().bindParticleShader(true);
+            if (translucentProgram <= 0) {
+                translucentProgram = activeProgram;
+                GL20.glUseProgram(translucentProgram);
+            }
+            IrisShaderToggle.bindParticleBufferBlock(translucentProgram, SSBO_BINDING_INDEX);
+            IrisShaderToggle.uploadNebulaUniforms(translucentProgram, standardExternalModelView,
+                    standardExternalProjection, originX, originY, originZ, partialTicks);
+            IrisShaderToggle.setActive(translucentProgram, true);
+            IrisShaderToggle.uploadNebulaMaterialUniforms(translucentProgram, useTexture && glTextureId > 0, currentEmissive, 3, IRIS_PARTICLE_TEXTURE_UNIT);
+            RenderSystem.depthMask(false);
+            switch (blendMode) {
+                case ADDITIVE:
+                    RenderSystem.blendFuncSeparate(
+                            GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE,
+                            GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
+                    );
+                    break;
+                case ALPHA:
+                default:
+                    RenderSystem.blendFuncSeparate(
+                            GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA,
+                            GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
+                    );
+                    break;
+            }
 
-        GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
+            GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
+        } else {
+            // Pass 1: Opaque
+            if (uRenderPass != -1)
+                GL20.glUniform1i(uRenderPass, 0); // Opaque Pass
 
-        // Pass 2: Translucent
-        if (uRenderPass != -1)
-            GL20.glUniform1i(uRenderPass, 2); // Translucent Pass (Standard)
+            RenderSystem.depthMask(true);
+            RenderSystem.enableBlend();
+            RenderSystem.blendFunc(GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA);
 
-        RenderSystem.depthMask(false);
+            GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
 
-        switch (blendMode) {
-            case ADDITIVE:
-                RenderSystem.blendFuncSeparate(
-                        GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE,
-                        GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
-                );
-                break;
-            case ALPHA:
-            default:
-                RenderSystem.blendFuncSeparate(
-                        GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA,
-                        GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
-                );
-                break;
+            // Pass 2: Translucent
+            if (uRenderPass != -1)
+                GL20.glUniform1i(uRenderPass, 2); // Translucent Pass (Standard)
+
+            RenderSystem.depthMask(false);
+
+            switch (blendMode) {
+                case ADDITIVE:
+                    RenderSystem.blendFuncSeparate(
+                            GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE,
+                            GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
+                    );
+                    break;
+                case ALPHA:
+                default:
+                    RenderSystem.blendFuncSeparate(
+                            GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA,
+                            GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
+                    );
+                    break;
+            }
+
+            GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
         }
-
-        GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
 
         // Stats
         PerformanceStats stats = PerformanceStats.getInstance();
@@ -841,6 +1039,8 @@ public class GpuParticleRenderer {
         long destAddress = MemoryUtil.memAddress(mappedBuffer);
         long srcAddress = MemoryUtil.memAddress(data);
         MemoryUtil.memCopy(srcAddress, destAddress, dataSize);
+        // 确保 CPU 写入对 GPU 可见 (Persistent Mapped Buffer 需要)
+        GL42.glMemoryBarrier(GL42.GL_ALL_BARRIER_BITS);
         stats.endDataUpload(); // 计时
         return ssbos[bufferIndex];
     }
@@ -848,7 +1048,7 @@ public class GpuParticleRenderer {
     /**
      * 降级模式数据上传（传统 glBufferSubData）
      */
-    private static int uploadDataFallback(ByteBuffer data, int dataSize) {
+    private static int uploadDataFallback(ByteBuffer data) {
         PerformanceStats stats = PerformanceStats.getInstance();
         stats.beginDataUpload(); // 统计数据
         GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, ssbos[0]);
@@ -859,6 +1059,7 @@ public class GpuParticleRenderer {
         // 写入数据
         GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, data);
         GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
+        GL42.glMemoryBarrier(GL42.GL_ALL_BARRIER_BITS);
         stats.endDataUpload(); // 计时
         return ssbos[0];
     }
@@ -916,31 +1117,6 @@ public class GpuParticleRenderer {
         }
     }
 
-    /**
-     * 清理渲染器
-     */
-    public static void cleanup() {
-        cleanupBuffers();
-
-        if (vao != -1) {
-            GL30.glDeleteVertexArrays(vao);
-            vao = -1;
-        }
-        if (quadVbo != -1) {
-            GL15.glDeleteBuffers(quadVbo);
-            quadVbo = -1;
-        }
-        if (shaderProgram > 0) {
-            GL20.glDeleteProgram(shaderProgram);
-            shaderProgram = -1;
-        }
-
-        initialized = false;
-        shaderCompiled = false;
-        pmbSupported = false;
-        useFallback = false;
-    }
-
     private static String loadShaderSource(Identifier id) {
         try {
             Optional<net.minecraft.resource.Resource> resource = MinecraftClient.getInstance().getResourceManager()
@@ -976,7 +1152,7 @@ public class GpuParticleRenderer {
         String fragmentSource = loadShaderSource(fshId);
         if (vertexSource == null || fragmentSource == null)
             return -1;
-        int vertexShader = 0, fragmentShader = 0, program = 0;
+        int vertexShader = 0, fragmentShader = 0, program;
         try {
             vertexShader = GL20.glCreateShader(GL20.GL_VERTEX_SHADER);
             GL20.glShaderSource(vertexShader, vertexSource);
@@ -1019,27 +1195,6 @@ public class GpuParticleRenderer {
     }
 
     /**
-     * 检查是否初始化
-     * 
-     * @return 是否初始化
-     */
-    public static boolean isInitialized() {
-        return initialized;
-    }
-
-    public static boolean isShaderCompiled() {
-        return shaderCompiled;
-    }
-
-    public static int getBufferSize() {
-        return currentBufferSize;
-    }
-
-    public static int getTypeSize() {
-        return lastFrameUsedBytes;
-    }
-
-    /**
      * 预分配 OIT 资源
      * 
      * @param width  视口宽度
@@ -1056,12 +1211,4 @@ public class GpuParticleRenderer {
         GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
     }
 
-    /**
-     * 检查是否支持 PMB
-     * 
-     * @return 是否支持 PMB
-     */
-    public static boolean isPMBSupported() {
-        return pmbSupported && !useFallback;
-    }
 }

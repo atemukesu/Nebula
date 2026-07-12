@@ -59,7 +59,7 @@
     "gui.nebula.config.blend_mode.alpha": "标准混合",
     "gui.nebula.config.blend_mode.oit": "OIT (与顺序无关透明度)",
     "gui.nebula.config.blend_mode.depth_priority": "深度优先（Iris）",
-    "gui.nebula.config.blend_mode.depth_priority.desc": "启用光影时，Alpha、加法混合和 OIT 均不可用。\n\nNebula 会先写入半透明粒子的深度，再绘制颜色，以避免粒子在地平线处被后续光影层覆盖。\n\n代价：近处半透明粒子会遮挡远处半透明粒子。",
+    "gui.nebula.config.blend_mode.depth_priority.desc": "启用光影时，Alpha、加法混合和 OIT 均不可用。\n\nNebula 会先写入半透明粒子的深度，再绘制颜色，以避免粒子在地平线处被后续光影层覆盖。\n\n代价：近处半透明粒子会遮挡远处半透明粒子。\n\n如果的确影响使用，请调整渲染管线为原版管线。",
     "gui.nebula.config.culling_behavior": "粒子剔除行为",
     "gui.nebula.config.culling_behavior.desc": "设置粒子在视野外的处理方式。\n\n§6仅跳过渲染（推荐）§r：保持逻辑计算，进入视野无延迟，但消耗CPU。\n\n§6完全暂停§r：完全停止处理。§c警告§r：进入视野时因数据寻址可能产生可感卡顿。",
     "gui.nebula.config.culling_behavior.simulate_only": "仅跳过渲染",
@@ -68,6 +68,8 @@
     "gui.nebula.config.emissive_strength.desc": "控制粒子的发光强度。值越高，粒子越亮。",
     "gui.nebula.config.sync_singleplayer": "单人模式动画同步",
     "gui.nebula.config.sync_singleplayer.desc": "测试用选项，不建议开启。\n\n在单人游戏中也进行动画文件同步检查。通常情况下单人模式不需要同步，因为客户端和服务端使用相同的文件。",
+    "gui.nebula.config.save_injected_code": "保存注入后的着色器代码",
+    "gui.nebula.config.save_injected_code.desc": "将 Nebula 注入后的着色器代码保存到游戏目录 (nebula/injected_code/)。\n\n用于调试 Iris 光影包的着色器兼容性问题。",
     "command.nebula.client.reload.success": "动画重载成功！",
     "command.nebula.client.reload.failed": "动画重载失败。详情请查看日志。"
 }

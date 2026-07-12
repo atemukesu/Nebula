@@ -108,6 +108,18 @@ public class NebulaYACLConfig {
                                                                                 config::setSyncSingleplayerAnimations)
                                                                 .controller(BooleanControllerBuilder::create)
                                                                 .build())
+                                                .option(Option.<Boolean>createBuilder()
+                                                                .name(Text.translatable(
+                                                                                "gui.nebula.config.save_injected_code"))
+                                                                .description(OptionDescription
+                                                                                .of(Text.translatable(
+                                                                                                "gui.nebula.config.save_injected_code.desc")))
+                                                                .binding(
+                                                                                false,
+                                                                                config::getSaveInjectedCode,
+                                                                                config::setSaveInjectedCode)
+                                                                .controller(BooleanControllerBuilder::create)
+                                                                .build())
                                                 .build())
                                 .category(ConfigCategory.createBuilder()
                                                 .name(Text.translatable("gui.nebula.config.category.rendering"))

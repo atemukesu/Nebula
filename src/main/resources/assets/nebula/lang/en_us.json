@@ -59,7 +59,7 @@
     "gui.nebula.config.blend_mode.alpha": "Alpha Blend",
     "gui.nebula.config.blend_mode.oit": "OIT (Order Independent)",
     "gui.nebula.config.blend_mode.depth_priority": "Depth Priority (Iris)",
-    "gui.nebula.config.blend_mode.depth_priority.desc": "Alpha, Additive, and OIT are unavailable while a shaderpack is active.\n\nNebula writes transparent-particle depth before color to prevent later shaderpack layers from clipping particles at the horizon.\n\nTrade-off: nearer transparent particles occlude farther transparent particles.",
+    "gui.nebula.config.blend_mode.depth_priority.desc": "Alpha, Additive, and OIT are unavailable while a shaderpack is active.\n\nNebula writes transparent-particle depth before color to prevent later shaderpack layers from clipping particles at the horizon.\n\nTrade-off: nearer transparent particles occlude farther transparent particles.\n\nIf this significantly affects your experience, please switch the render pipeline to the vanilla pipeline.",
     "gui.nebula.config.culling_behavior": "Particle Culling Behavior",
     "gui.nebula.config.culling_behavior.desc": "Sets how particles are handled when outside the field of view.\n\n§6Skip Rendering Only (Recommended)§r: Keeps logic calculations. No delay when entering view, but consumes CPU.\n\n§6Fully Pause§r: Completely stops processing. §cWarning§r: May cause noticeable stuttering when entering view due to data addressing.",
     "gui.nebula.config.culling_behavior.simulate_only": "Skip Rendering Only",
@@ -68,6 +68,8 @@
     "gui.nebula.config.emissive_strength.desc": "Controls the emissive strength of particles. Higher values make particles glow brighter.",
     "gui.nebula.config.sync_singleplayer": "Singleplayer Animation Sync",
     "gui.nebula.config.sync_singleplayer.desc": "Test option, not recommended to enable.\n\nPerform animation file synchronization checks even in singleplayer games. Normally singleplayer mode doesn't need synchronization since client and server use the same files.",
+    "gui.nebula.config.save_injected_code": "Save Injected Shader Code",
+    "gui.nebula.config.save_injected_code.desc": "Save the transformed shader code after Nebula's injection to the game directory (nebula/injected_code/).\n\nUseful for debugging shader compatibility issues with Iris shader packs.",
     "command.nebula.client.reload.success": "Animations reloaded successfully!",
     "command.nebula.client.reload.failed": "Failed to reload animations. See log for details."
 }

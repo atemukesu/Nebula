@@ -1,7 +1,12 @@
 package com.atemukesu.nebula.client.shader;
 
 import com.atemukesu.nebula.Nebula;
+import com.atemukesu.nebula.client.config.ModConfig;
+import net.fabricmc.loader.api.FabricLoader;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -12,7 +17,6 @@ public final class IrisShaderTransformer {
     private static final Pattern EXTENSION_PATTERN = Pattern.compile("(?m)^\\s*#extension\\b.*$");
     private static final Pattern MAIN_PATTERN = Pattern.compile("void\\s+main\\s*\\(\\s*\\)\\s*\\{");
     private static final Pattern OUT0_PATTERN = Pattern.compile("layout\\s*\\(\\s*location\\s*=\\s*0\\s*\\)\\s*out\\s+vec4\\s+(\\w+)\\s*;");
-    private static final Pattern OUT1_PATTERN = Pattern.compile("layout\\s*\\(\\s*location\\s*=\\s*1\\s*\\)\\s*out\\s+vec4\\s+(\\w+)\\s*;");
 
     private IrisShaderTransformer() {
     }
@@ -24,13 +28,11 @@ public final class IrisShaderTransformer {
 
         int version = shaderVersion(source);
         if (version < 120) {
-            Nebula.LOGGER.warn("[Nebula/Iris] Skipping {} vertex hook because GLSL {} is unsupported.", programName, version);
             return source;
         }
 
         String transformed = injectShaderBlock(source, vertexExtensions(version), vertexBlock(version));
         if (transformed == null) {
-            Nebula.LOGGER.warn("[Nebula/Iris] Skipping {} vertex hook because the shader has no #version directive.", programName);
             return source;
         }
 
@@ -69,7 +71,12 @@ public final class IrisShaderTransformer {
                     return;
                 }
             """.formatted(instanceId);
-        return transformed.substring(0, bodyStart) + injectedMain + transformed.substring(bodyStart);
+        String result = transformed.substring(0, bodyStart) + injectedMain + transformed.substring(bodyStart);
+        Nebula.LOGGER.info("[Nebula/Iris] Injected {} vertex: instanceId={}, length={}", programName, instanceId, result.length());
+        if (ModConfig.getInstance().getSaveInjectedCode()) {
+            saveInjectedCode(programName, "vert", result);
+        }
+        return result;
     }
 
     public static String transformFragmentSource(String programName, String source) {
@@ -78,20 +85,18 @@ public final class IrisShaderTransformer {
         }
 
         int version = shaderVersion(source);
-        if (version < 120) {
-            return source;
-        }
+        if (version < 120) return source;
 
         String primaryOutput = findPrimaryOutput(source);
         if (primaryOutput == null) {
-            Nebula.LOGGER.warn("[Nebula/Iris] Skipping {} fragment hook because no color output was recognized.", programName);
             return source;
         }
 
+        boolean hasOutput3 = hasOutputVariable(source, "gbufferOutput3");
+        boolean hasOutput5 = hasOutputVariable(source, "gbufferOutput5");
+
         String transformed = injectShaderBlock(source, fragmentExtensions(version), fragmentBlock(version));
-        if (transformed == null) {
-            return source;
-        }
+        if (transformed == null) return source;
 
         Matcher mainMatcher = MAIN_PATTERN.matcher(transformed);
         if (!mainMatcher.find()) {
@@ -99,69 +104,84 @@ public final class IrisShaderTransformer {
         }
 
         String textureFunction = version >= 130 ? "texture" : "texture2DArray";
-        String secondaryOutput = findSecondaryOutput(transformed);
-        String secondaryOutputLine = secondaryOutput == null ? "" : secondaryOutput + " = vec4(nebulaAlpha);";
-        // Do not continue through the shaderpack's original particle body.  Its
-        // fog/material path consumes pack-specific vertex varyings (and may apply
-        // another alpha discard) which Nebula's instanced vertices intentionally
-        // do not provide.  That made the result depend on the far background,
-        // especially for low-alpha particles at the horizon.
-        String injectedMain = fallbackFragmentPrefix(textureFunction, primaryOutput, secondaryOutputLine);
+
+        String injectedMain = buildDynamicFragmentBody(
+                primaryOutput,
+                textureFunction,
+                hasOutput3,
+                hasOutput5
+        );
 
         int bodyStart = mainMatcher.end();
-        return transformed.substring(0, bodyStart) + injectedMain + transformed.substring(bodyStart);
+        String result = transformed.substring(0, bodyStart) + injectedMain + transformed.substring(bodyStart);
+        Nebula.LOGGER.info("[Nebula/Iris] Injected {} fragment: primary={}, hasOut3={}, hasOut5={}, length={}",
+                programName, primaryOutput, hasOutput3, hasOutput5, result.length());
+        if (ModConfig.getInstance().getSaveInjectedCode()) {
+            saveInjectedCode(programName, "frag", result);
+        }
+        return result;
     }
 
-    private static String fallbackFragmentPrefix(String textureFunction, String primaryOutput, String secondaryOutputLine) {
-        return """
-                if (NebulaIsActive == 1) {
-                    const float nebulaAlphaCutoff = 0.001;
-                    vec4 nebulaTexColor;
-                    if (NebulaUseTexture == 1) {
-                        nebulaTexColor = %s(NebulaSampler0, vec3(NebulaVUV, NebulaVTexLayer));
-                    } else {
-                        vec2 nebulaCenter = NebulaVUV - 0.5;
-                        float nebulaDist = length(nebulaCenter) * 2.0;
-                        float nebulaAlpha = 1.0 - smoothstep(0.5, 1.0, nebulaDist);
-                        float nebulaCoreBrightness = 1.0 + 0.5 * (1.0 - smoothstep(0.0, 0.3, nebulaDist));
-                        nebulaTexColor = vec4(vec3(nebulaCoreBrightness), nebulaAlpha);
-                    }
+    private static String buildDynamicFragmentBody(String primaryOutput, String textureFunction,
+                                                   boolean hasOut3, boolean hasOut5) {
+        StringBuilder body = new StringBuilder();
+        body.append("if (NebulaIsActive == 1) {\n");
+        body.append("    const float nebulaAlphaCutoff = 0.001;\n");
+        body.append("    vec4 nebulaTexColor;\n");
+        body.append("    if (NebulaUseTexture == 1) {\n");
+        body.append("        nebulaTexColor = ").append(textureFunction).append("(NebulaSampler0, vec3(NebulaVUV, NebulaVTexLayer));\n");
+        body.append("    } else {\n");
+        body.append("        vec2 nebulaCenter = NebulaVUV - 0.5;\n");
+        body.append("        float nebulaDist = length(nebulaCenter) * 2.0;\n");
+        body.append("        float nebulaAlpha = 1.0 - smoothstep(0.5, 1.0, nebulaDist);\n");
+        body.append("        float nebulaCoreBrightness = 1.0 + 0.5 * (1.0 - smoothstep(0.0, 0.3, nebulaDist));\n");
+        body.append("        nebulaTexColor = vec4(vec3(nebulaCoreBrightness), nebulaAlpha);\n");
+        body.append("    }\n");
+        body.append("    vec4 nebulaBaseColor = nebulaTexColor * NebulaVColor;\n");
 
-                    vec4 nebulaBaseColor = nebulaTexColor * NebulaVColor;
-                    if (NebulaRenderPass == 0) {
-                        if (nebulaBaseColor.a < 0.5) {
-                            discard;
-                        }
-                    } else if (NebulaRenderPass == 1 || NebulaRenderPass == 3) {
-                        if (nebulaBaseColor.a < nebulaAlphaCutoff || nebulaBaseColor.a >= 0.5) {
-                            discard;
-                        }
-                    } else {
-                        if (nebulaBaseColor.a < nebulaAlphaCutoff) {
-                            discard;
-                        }
-                    }
+        body.append("    if (NebulaRenderPass == 0) {\n");
+        body.append("        if (nebulaBaseColor.a < 0.5) discard;\n");
+        body.append("    } else if (NebulaRenderPass == 1 || NebulaRenderPass == 3) {\n");
+        body.append("        if (nebulaBaseColor.a < nebulaAlphaCutoff || nebulaBaseColor.a >= 0.5) discard;\n");
+        body.append("    } else {\n");
+        body.append("        if (nebulaBaseColor.a < nebulaAlphaCutoff) discard;\n");
+        body.append("    }\n");
 
-                    vec3 nebulaOutputColor = nebulaBaseColor.rgb;
-                    if (NebulaRenderPass == 1) {
-                        float nebulaAlpha = clamp(nebulaBaseColor.a, 0.0, 1.0);
-                        float nebulaWeight = clamp(
-                            pow(min(1.0, nebulaAlpha * 5.0) + 0.01, 3.0)
-                            * pow(1.0 - gl_FragCoord.z * 0.9, 3.0)
-                            * 250.0,
-                            1e-2, 100.0
-                        );
-                        %s = vec4(nebulaOutputColor * nebulaAlpha * nebulaWeight, nebulaAlpha * nebulaWeight);
-                        %s
-                    } else {
-                        vec3 nebulaHdrColor = nebulaOutputColor * NebulaVBloomFactor * NebulaEmissiveStrength;
-                        // Iris particle targets are composited with premultiplied
-                        // alpha, including their alpha channel.
-                        %s = vec4(nebulaHdrColor * nebulaBaseColor.a, nebulaBaseColor.a);
-                    }
-                    return;
-                }
-            """.formatted(textureFunction, primaryOutput, secondaryOutputLine, primaryOutput);
+        body.append("    vec3 nebulaOutputColor = nebulaBaseColor.rgb;\n");
+
+        // Pure native GLSL: encode view-space normal (sprite always faces camera)
+        body.append("    vec2 nebulaNormalEnc = vec2(0.5, 0.5);\n");
+        // Pack2x8(vec2(0.0, 1.0)) = 1.0 / 65535.0
+        body.append("    float nebulaPackDefault = 1.0 / 65535.0;\n");
+
+        // Pass 1 (OIT Accumulation)
+        body.append("    if (NebulaRenderPass == 1) {\n");
+        body.append("        float nebulaAlpha = clamp(nebulaBaseColor.a, 0.0, 1.0);\n");
+        body.append("        float nebulaWeight = clamp(pow(min(1.0, nebulaAlpha * 5.0) + 0.01, 3.0) * pow(1.0 - gl_FragCoord.z * 0.9, 3.0) * 250.0, 1e-2, 100.0);\n");
+        body.append("        ").append(primaryOutput).append(" = vec4(nebulaOutputColor * nebulaAlpha * nebulaWeight, nebulaAlpha * nebulaWeight);\n");
+        if (hasOut3) {
+            body.append("        gbufferOutput3 = vec4(nebulaNormalEnc, 1.0, 1.0);\n");
+        }
+        if (hasOut5) {
+            body.append("        gbufferOutput5 = vec4(0.0, 0.0, 40.0 / 255.0, nebulaPackDefault);\n");
+        }
+
+        // Other Passes (0, 2, 3)
+        body.append("    } else {\n");
+        body.append("        vec3 nebulaHdrColor = nebulaOutputColor * NebulaVBloomFactor * NebulaEmissiveStrength;\n");
+        body.append("        ").append(primaryOutput).append(" = vec4(nebulaHdrColor * nebulaBaseColor.a, nebulaBaseColor.a);\n");
+        if (hasOut3) {
+            body.append("        gbufferOutput3 = vec4(nebulaNormalEnc, 1.0, 1.0);\n");
+        }
+        if (hasOut5) {
+            body.append("        gbufferOutput5 = vec4(0.0, 0.0, 40.0 / 255.0, nebulaPackDefault);\n");
+        }
+
+        body.append("    }\n");
+        body.append("    return;\n");
+        body.append("}\n");
+
+        return body.toString();
     }
 
     private static String vertexExtensions(int version) {
@@ -272,20 +292,14 @@ public final class IrisShaderTransformer {
         return null;
     }
 
-    private static String findSecondaryOutput(String source) {
-        String namedOutput = findOutputName(source, OUT1_PATTERN);
-        if (namedOutput != null) {
-            return namedOutput;
-        }
-        if (source.contains("gl_FragData[1]")) {
-            return "gl_FragData[1]";
-        }
-        return null;
-    }
-
     private static String findOutputName(String source, Pattern pattern) {
         Matcher matcher = pattern.matcher(source);
         return matcher.find() ? matcher.group(1) : null;
+    }
+
+    private static boolean hasOutputVariable(String source, String varName) {
+        Pattern p = Pattern.compile("(?:layout\\s*\\(\\s*location\\s*=\\s*\\d+\\s*\\)\\s*)?out\\s+vec4\\s+" + varName + "\\s*;");
+        return p.matcher(source).find();
     }
 
     private static boolean looksLikeParticleVertexShader(String source) {
@@ -328,5 +342,26 @@ public final class IrisShaderTransformer {
                 || normalized.equals("particles")
                 || normalized.equals("particles_trans")
                 || normalized.equals("shadow_particles");
+    }
+
+    private static void saveInjectedCode(String programName, String ext, String code) {
+        try {
+            String safeName = programName.replace('\\', '/').replaceAll("[^a-zA-Z0-9._/\\-]", "_");
+            int lastSlash = safeName.lastIndexOf('/');
+            if (lastSlash >= 0) {
+                safeName = safeName.substring(lastSlash + 1);
+            }
+            int dotIdx = safeName.lastIndexOf('.');
+            if (dotIdx >= 0) {
+                safeName = safeName.substring(0, dotIdx);
+            }
+            Path dir = FabricLoader.getInstance().getGameDir().resolve("nebula").resolve("injected_code");
+            Files.createDirectories(dir);
+            Path file = dir.resolve(safeName + "." + ext);
+            Files.writeString(file, code);
+            Nebula.LOGGER.info("[Nebula/Iris] Saved injected shader code to {}", file);
+        } catch (IOException e) {
+            Nebula.LOGGER.warn("[Nebula/Iris] Failed to save injected shader code for {}: {}", programName, e.getMessage());
+        }
     }
 }

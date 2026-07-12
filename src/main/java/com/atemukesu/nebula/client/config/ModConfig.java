@@ -62,6 +62,9 @@ public class ModConfig {
     private float emissiveStrength;
     private CullingBehavior cullingBehavior;
     
+    // 调试选项
+    private boolean saveInjectedCode;
+    
     // 测试选项
     private boolean syncSingleplayerAnimations;
 
@@ -78,6 +81,8 @@ public class ModConfig {
         // 默认使用用户自定义的亮度
         this.emissiveStrength = 2.0f;
         this.cullingBehavior = CullingBehavior.SIMULATE_ONLY;
+        // 默认关闭保存注入后的着色器代码
+        this.saveInjectedCode = false;
         // 默认关闭单人模式动画同步（测试用）
         this.syncSingleplayerAnimations = false;
     }
@@ -208,6 +213,14 @@ public class ModConfig {
      */
     public void setCullingBehavior(CullingBehavior cullingBehavior) {
         this.cullingBehavior = cullingBehavior;
+    }
+
+    public boolean getSaveInjectedCode() {
+        return this.saveInjectedCode;
+    }
+
+    public void setSaveInjectedCode(Boolean saveInjectedCode) {
+        this.saveInjectedCode = saveInjectedCode;
     }
     
     /**

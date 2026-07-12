@@ -1083,7 +1083,7 @@ public class GpuParticleRenderer {
         long srcAddress = MemoryUtil.memAddress(data);
         MemoryUtil.memCopy(srcAddress, destAddress, dataSize);
         // 确保 CPU 写入对 GPU 可见 (Persistent Mapped Buffer 需要)
-        GL42.glMemoryBarrier(GL42.GL_ALL_BARRIER_BITS);
+        GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
         stats.endDataUpload(); // 计时
         return ssbos[bufferIndex];
     }
@@ -1102,7 +1102,7 @@ public class GpuParticleRenderer {
         // 写入数据
         GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, data);
         GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
-        GL42.glMemoryBarrier(GL42.GL_ALL_BARRIER_BITS);
+        GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
         stats.endDataUpload(); // 计时
         return ssbos[0];
     }

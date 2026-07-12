@@ -71,10 +71,6 @@ public class NebulaWorldRendererMixin {
 
     @Unique
     private static boolean hasLoggedIrisPath = false;
-    @Unique
-    private static boolean hasLoggedStandardPath = false;
-    @Unique
-    private static boolean hasLoggedIrisFallbackPath = false;
 
     @Inject(method = "render", at = @At(value = "INVOKE",
             shift = At.Shift.AFTER,
@@ -114,17 +110,11 @@ public class NebulaWorldRendererMixin {
         
         *///? }
 
-                if (ModConfig.getInstance().getRenderPipeline() == RenderPipeline.VANILLA_BATCH) {
-                        ClientAnimationManager.getInstance().updateParticlePositions(camera, this.frustum, tickDelta);
+                if (ModConfig.getInstance().getRenderPipeline() != RenderPipeline.VANILLA_BATCH) {
                         return;
                 }
 
-                // 1. Check Iris via Bridge
-                if (!IrisBridge.getInstance().isIrisRenderingActive()) {
-                        return;
-                }
-
-                return;
+                ClientAnimationManager.getInstance().updateParticlePositions(camera, this.frustum, tickDelta);
         }
 
     /**

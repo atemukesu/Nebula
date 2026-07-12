@@ -1,6 +1,8 @@
 package com.atemukesu.nebula.client.mixin;
 
 import com.atemukesu.nebula.client.ClientAnimationManager;
+import com.atemukesu.nebula.client.config.ModConfig;
+import com.atemukesu.nebula.client.enums.RenderPipeline;
 import net.minecraft.client.render.Camera;
 import net.minecraft.client.render.LightmapTextureManager;
 import org.spongepowered.asm.mixin.Mixin;
@@ -27,6 +29,9 @@ public class NebulaParticleManagerMixin {
             CallbackInfo ci
             //? }
     ) {
+        if (ModConfig.getInstance().getRenderPipeline() != RenderPipeline.VANILLA_BATCH) {
+            return;
+        }
         ClientAnimationManager.getInstance().renderTickFromParticlePhase(camera, tickDelta);
     }
 }

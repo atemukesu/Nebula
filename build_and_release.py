@@ -20,6 +20,7 @@ import os
 import sys
 import glob
 import json
+import re
 import shutil
 import hashlib
 import subprocess
@@ -336,6 +337,31 @@ def generate_changelog():
                 
     log_success(f"更新日志已生成：{changelog_file}")
 
+def check_gh_auth():
+    """检查 GitHub CLI 登录状态，未登录则提示登录"""
+    if not shutil.which("gh"):
+        log_warning("未安装 GitHub CLI (gh)，跳过 GitHub 相关操作。")
+        return False
+
+    result = run_cmd(["gh", "auth", "status"], capture=True, check=False)
+    if "Logged in to" in result:
+        log_success("GitHub CLI 已登录")
+        return True
+
+    log_warning("GitHub CLI 未登录")
+    if ask_yes_no("是否现在进行 GitHub 登录？", default_yes=True):
+        log_info("请在弹出的浏览器中完成登录...")
+        login_result = run_cmd(["gh", "auth", "login"], capture=False, check=False)
+        # 验证登录是否成功
+        result = run_cmd(["gh", "auth", "status"], capture=True, check=False)
+        if "Logged in to" in result:
+            log_success("GitHub CLI 登录成功")
+            return True
+        else:
+            log_error("GitHub CLI 登录失败")
+            return False
+    return False
+
 def upload_to_github():
     """发布到 GitHub Releases"""
     if not ask_yes_no("是否要将构建产物发布到 GitHub Releases？", default_yes=True):
@@ -343,12 +369,21 @@ def upload_to_github():
         return
 
     gh_repo = os.environ.get("GITHUB_REPOSITORY")
-    if not os.environ.get("GITHUB_TOKEN") or not gh_repo:
-        log_warning("缺少 GITHUB_TOKEN 或 GITHUB_REPOSITORY 环境变量，无法上传。")
-        return
-        
-    if not shutil.which("gh"):
-        log_warning("未安装 GitHub CLI (gh)，跳过上传。")
+    if not gh_repo:
+        # 尝试从 git remote 获取仓库信息
+        gh_repo = run_cmd(["git", "remote", "get-url", "origin"], capture=True, check=False)
+        if gh_repo:
+            # 从 URL 中提取 owner/repo 格式
+            match = re.search(r'github\.com[:/](.+?)(?:\.git)?$', gh_repo)
+            if match:
+                gh_repo = match.group(1)
+            else:
+                gh_repo = ""
+        if not gh_repo:
+            log_warning("无法获取 GitHub 仓库信息，请设置 GITHUB_REPOSITORY 环境变量。")
+            return
+
+    if not check_gh_auth():
         return
 
     log_info("==========================================")

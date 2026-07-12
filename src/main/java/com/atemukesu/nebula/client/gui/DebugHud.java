@@ -47,6 +47,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.render.*;
+import net.minecraft.text.Text;
 import net.minecraft.util.math.MathHelper;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
@@ -209,7 +210,9 @@ public class DebugHud {
                     0x55CCFF));
 
             // 显示当前混合模式
-            String blendModeStr = config.getBlendMode().name();
+            String blendModeStr = config.isIrisDepthPriority()
+                    ? Text.translatable("gui.nebula.config.blend_mode.depth_priority").getString()
+                    : config.getEffectiveBlendMode().name();
             String cullingBehaviorStr = config.getCullingBehavior().name();
             cachedLines.add(new CachedLine(
                     String.format("Blend: %s | Culling: %s", blendModeStr, cullingBehaviorStr),

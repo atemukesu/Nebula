@@ -315,6 +315,58 @@ public class GpuParticleRenderer {
     private static boolean oitUsesExternalProgram = false;
 
     /**
+     * Iris shader binding is allowed to apply its own GL state.  Re-establish the
+     * vanilla particle depth contract after that binding and immediately before a
+     * Nebula draw, so the transparent pass never inherits a disabled/decal depth
+     * test from an earlier shaderpack pass.
+     */
+    private static void prepareParticleDepthState() {
+        RenderSystem.enableDepthTest();
+        RenderSystem.depthFunc(GL11.GL_LEQUAL);
+    }
+
+    /**
+     * Iris transparent targets are composited again later in the shaderpack.
+     * Keep their alpha channel with the color by using premultiplied-alpha
+     * blending.  The old SRC_ALPHA/.../ZERO,ONE setup never updated destination
+     * alpha, so later sky/fog composition could overwrite translucent particles.
+     */
+    private static void prepareIrisParticleBlendState(BlendMode blendMode) {
+        RenderSystem.enableBlend();
+        if (blendMode == BlendMode.ADDITIVE) {
+            RenderSystem.blendFuncSeparate(
+                    GlStateManager.SrcFactor.ONE, GlStateManager.DstFactor.ONE,
+                    GlStateManager.SrcFactor.ONE, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA
+            );
+        } else {
+            RenderSystem.blendFuncSeparate(
+                    GlStateManager.SrcFactor.ONE, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA,
+                    GlStateManager.SrcFactor.ONE, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA
+            );
+        }
+    }
+
+    /**
+     * The opaque pass remains visible at the horizon because it writes depth.
+     * Give the low-alpha pass the same protection without putting any color into
+     * the depth pre-pass: first write only the surviving fragment depth, then
+     * blend exactly those fragments into Iris' transparent target.
+     */
+    private static void drawIrisTranslucentParticles(int particleCount, BlendMode blendMode) {
+        prepareParticleDepthState();
+        RenderSystem.colorMask(false, false, false, false);
+        RenderSystem.depthMask(true);
+        GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
+
+        RenderSystem.colorMask(true, true, true, true);
+        RenderSystem.depthFunc(GL11.GL_EQUAL);
+        RenderSystem.depthMask(false);
+        prepareIrisParticleBlendState(blendMode);
+        GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
+        RenderSystem.depthFunc(GL11.GL_LEQUAL);
+    }
+
+    /**
      * 开始 OIT 全局阶段
      * 必须在批量绘制粒子之前调用。
      * 只做初始化，不立即绑定 OIT FBO（因为 Pass 1 需要绘制到主 FBO）
@@ -374,6 +426,15 @@ public class GpuParticleRenderer {
         RenderSystem.assertOnRenderThread();
 
         if (oitUsesExternalProgram) {
+            // [FIX] 恢复 FBO 到原始目标（bindTranslucentFramebuffer 可能已切换 FBO）
+            if (globalOitTargetFboId >= 0) {
+                if (globalOitTargetFboId == MinecraftClient.getInstance().getFramebuffer().fbo) {
+                    MinecraftClient.getInstance().getFramebuffer().beginWrite(false);
+                } else {
+                    GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, globalOitTargetFboId);
+                }
+            }
+
             globalOitActive = false;
             globalOitTargetFboId = -1;
             globalOitCleared = false;
@@ -570,7 +631,10 @@ public class GpuParticleRenderer {
 
         if (oitUsesExternalProgram) {
             GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, globalOitTargetFboId);
-            int opaqueProgram = IrisBridge.getInstance().bindParticleShader(false);
+            // Nebula is injected while Iris is in the PARTICLES phase.  Switching
+            // only the program to PARTICLES does not also switch Iris' framebuffer
+            // routing, so keep this draw in the phase's particles_trans program.
+            int opaqueProgram = IrisBridge.getInstance().bindParticleShader(true);
             if (opaqueProgram <= 0) {
                 opaqueProgram = activeProgram;
                 GL20.glUseProgram(opaqueProgram);
@@ -585,18 +649,18 @@ public class GpuParticleRenderer {
                     currentEmissive,
                     0,
                     IRIS_PARTICLE_TEXTURE_UNIT);
+            prepareParticleDepthState();
             RenderSystem.depthMask(true);
-            RenderSystem.enableBlend();
-            RenderSystem.blendFuncSeparate(
-                    GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA,
-                    GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
-            );
+            prepareIrisParticleBlendState(BlendMode.ALPHA);
             GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
 
             IrisShaderToggle.setActive(opaqueProgram, false);
+
+            // 透明粒子必须回到 Iris 的 particles_trans 程序。仅切换 GL program
+            // 到 PARTICLES 会把片段送到错误的 shaderpack 渲染目标，不能用于透明层。
             int translucentProgram = IrisBridge.getInstance().bindParticleShader(true);
             if (translucentProgram <= 0) {
-                translucentProgram = activeProgram;
+                translucentProgram = opaqueProgram;
                 GL20.glUseProgram(translucentProgram);
             }
             IrisShaderToggle.bindParticleBufferBlock(translucentProgram, SSBO_BINDING_INDEX);
@@ -609,13 +673,7 @@ public class GpuParticleRenderer {
                     currentEmissive,
                     3,
                     IRIS_PARTICLE_TEXTURE_UNIT);
-            RenderSystem.depthMask(false);
-            RenderSystem.enableBlend();
-            RenderSystem.blendFuncSeparate(
-                    GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA,
-                    GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
-            );
-            GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
+            drawIrisTranslucentParticles(particleCount, BlendMode.ALPHA);
         } else {
             // ==========================================
             // Pass 1: 不透明粒子 (Opaque)
@@ -900,10 +958,12 @@ public class GpuParticleRenderer {
         GL13.glActiveTexture(GL13.GL_TEXTURE0);
 
         // Drawing Passes (2-Pass: Opaque + Translucent)
-        BlendMode blendMode = ModConfig.getInstance().getBlendMode();
+        BlendMode blendMode = ModConfig.getInstance().getEffectiveBlendMode();
 
         if (standardBatchUsesExternalProgram) {
-            int opaqueProgram = IrisBridge.getInstance().bindParticleShader(false);
+            // See the OIT path: program-only switching to PARTICLES mismatches the
+            // framebuffer selected by the active Iris PARTICLES phase.
+            int opaqueProgram = IrisBridge.getInstance().bindParticleShader(true);
             if (opaqueProgram <= 0) {
                 opaqueProgram = activeProgram;
                 GL20.glUseProgram(opaqueProgram);
@@ -913,18 +973,18 @@ public class GpuParticleRenderer {
                     standardExternalProjection, originX, originY, originZ, partialTicks);
             IrisShaderToggle.setActive(opaqueProgram, true);
             IrisShaderToggle.uploadNebulaMaterialUniforms(opaqueProgram, useTexture && glTextureId > 0, currentEmissive, 0, IRIS_PARTICLE_TEXTURE_UNIT);
+            prepareParticleDepthState();
             RenderSystem.depthMask(true);
-            RenderSystem.enableBlend();
-            RenderSystem.blendFuncSeparate(
-                    GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA,
-                    GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
-            );
+            prepareIrisParticleBlendState(blendMode);
             GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
 
             IrisShaderToggle.setActive(opaqueProgram, false);
+
+            // 透明粒子必须使用 Iris 的 particles_trans 程序，确保写入 shaderpack
+            // 为粒子透明层配置的渲染目标。
             int translucentProgram = IrisBridge.getInstance().bindParticleShader(true);
             if (translucentProgram <= 0) {
-                translucentProgram = activeProgram;
+                translucentProgram = opaqueProgram;
                 GL20.glUseProgram(translucentProgram);
             }
             IrisShaderToggle.bindParticleBufferBlock(translucentProgram, SSBO_BINDING_INDEX);
@@ -932,24 +992,7 @@ public class GpuParticleRenderer {
                     standardExternalProjection, originX, originY, originZ, partialTicks);
             IrisShaderToggle.setActive(translucentProgram, true);
             IrisShaderToggle.uploadNebulaMaterialUniforms(translucentProgram, useTexture && glTextureId > 0, currentEmissive, 3, IRIS_PARTICLE_TEXTURE_UNIT);
-            RenderSystem.depthMask(false);
-            switch (blendMode) {
-                case ADDITIVE:
-                    RenderSystem.blendFuncSeparate(
-                            GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE,
-                            GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
-                    );
-                    break;
-                case ALPHA:
-                default:
-                    RenderSystem.blendFuncSeparate(
-                            GlStateManager.SrcFactor.SRC_ALPHA, GlStateManager.DstFactor.ONE_MINUS_SRC_ALPHA,
-                            GlStateManager.SrcFactor.ZERO, GlStateManager.DstFactor.ONE
-                    );
-                    break;
-            }
-
-            GL31.glDrawArraysInstanced(GL11.GL_TRIANGLE_FAN, 0, 4, particleCount);
+            drawIrisTranslucentParticles(particleCount, blendMode);
         } else {
             // Pass 1: Opaque
             if (uRenderPass != -1)

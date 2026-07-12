@@ -42,6 +42,7 @@ import com.atemukesu.nebula.client.enums.BlendMode;
 import com.atemukesu.nebula.client.enums.CullingBehavior;
 import com.atemukesu.nebula.client.enums.RenderPipeline;
 import com.atemukesu.nebula.client.render.GpuParticleRenderer;
+import com.atemukesu.nebula.client.util.IrisUtil;
 
 import net.minecraft.client.MinecraftClient;
 
@@ -132,13 +133,26 @@ public class ModConfig {
     }
 
     /**
+     * Shaderpack framebuffers cannot use Nebula's Alpha/Additive/OIT paths
+     * safely.  Iris therefore uses the dedicated depth-priority path instead;
+     * the configured blend mode is preserved for non-Iris rendering.
+     */
+    public boolean isIrisDepthPriority() {
+        return getRenderPipeline() == RenderPipeline.GPU && IrisUtil.isIrisRenderingActive();
+    }
+
+    public BlendMode getEffectiveBlendMode() {
+        return isIrisDepthPriority() ? BlendMode.ALPHA : getBlendMode();
+    }
+
+    /**
      * 设置粒子混合模式
      */
     public void setBlendMode(BlendMode blendMode) {
         this.blendMode = blendMode;
         // 预加载 OIT
         MinecraftClient client = MinecraftClient.getInstance();
-        if (this.blendMode == BlendMode.OIT && client.getWindow() != null) {
+        if (this.blendMode == BlendMode.OIT && !isIrisDepthPriority() && client.getWindow() != null) {
             int w = client.getWindow().getFramebufferWidth();
             int h = client.getWindow().getFramebufferHeight();
             if (w > 0 && h > 0) {

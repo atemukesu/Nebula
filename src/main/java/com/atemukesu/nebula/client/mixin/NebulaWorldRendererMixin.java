@@ -127,4 +127,43 @@ public class NebulaWorldRendererMixin {
                 return;
         }
 
+    /**
+     * In the fabulous/transparency-post-process path Minecraft renders particles
+     * before the translucent terrain pass.  GPU Nebula particles used to be
+     * injected at ParticleManager.TAIL, so low-alpha fragments (which correctly
+     * do not write depth) were overwritten by that later pass.  Render them just
+     * before weather instead: terrain translucency is complete, while Iris can
+     * still select its after-translucent particle framebuffer.
+     */
+    @Inject(method = "render", at = @At(value = "INVOKE", shift = At.Shift.BEFORE,
+            target = "Lnet/minecraft/client/render/WorldRenderer;renderWeather(Lnet/minecraft/client/render/LightmapTextureManager;FDDD)V"), require = 0)
+    private void nebula$renderIrisParticlesAfterTranslucency(
+            //? if < 1.21 {
+            /*MatrixStack matrices, float tickDelta, long limitTime,
+            boolean renderBlockOutline, Camera camera, GameRenderer gameRenderer,
+            LightmapTextureManager lightmapTextureManager, Matrix4f projection,
+            CallbackInfo ci
+            *///? } else {
+            RenderTickCounter tickCounter, boolean renderBlockOutline, Camera camera, GameRenderer gameRenderer,
+            LightmapTextureManager lightmapTextureManager, Matrix4f positionMatrix, Matrix4f projectionMatrix,
+            CallbackInfo ci
+            //? }
+    ) {
+        if (ModConfig.getInstance().getRenderPipeline() != RenderPipeline.GPU
+                || !IrisBridge.getInstance().isIrisRenderingActive()) {
+            return;
+        }
+
+        if (!hasLoggedIrisPath) {
+            Nebula.LOGGER.info("[Nebula/Render] Rendering Iris GPU particles after translucent terrain.");
+            hasLoggedIrisPath = true;
+        }
+
+        //? if >= 1.21 {
+        ClientAnimationManager.getInstance().renderTickFromParticlePhase(camera, tickCounter.getTickDelta(true));
+        //? } else {
+        /*ClientAnimationManager.getInstance().renderTickFromParticlePhase(camera, tickDelta);
+        *///? }
+    }
+
 }

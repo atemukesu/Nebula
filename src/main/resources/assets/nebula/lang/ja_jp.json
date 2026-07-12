@@ -58,6 +58,8 @@
     "gui.nebula.config.blend_mode.additive": "加算ブレンド",
     "gui.nebula.config.blend_mode.alpha": "アルファブレンド",
     "gui.nebula.config.blend_mode.oit": "OIT (順序非依存)",
+    "gui.nebula.config.blend_mode.depth_priority": "深度優先（Iris）",
+    "gui.nebula.config.blend_mode.depth_priority.desc": "シェーダーパック有効中は、アルファ・加算・OIT を使用できません。\n\nNebula は地平線付近で後続のシェーダーパック層に粒子が隠されないよう、色の前に半透明粒子の深度を書き込みます。\n\n代償：手前の半透明粒子が奥の半透明粒子を隠します。",
     "gui.nebula.config.culling_behavior": "パーティクルのカリング挙動",
     "gui.nebula.config.culling_behavior.desc": "視界外にあるパーティクルの処理方法を設定します。\n\n§6描画のみスキップ (推奨)§r: ロジックの計算は維持されます。視界に入った際の遅延はありませんが、CPUを消費します。\n\n§6完全に一時停止§r: すべての処理を停止します。§c警告§r: 視界に入った際、データのアドレッシングによりカクつきが発生する場合があります。",
     "gui.nebula.config.culling_behavior.simulate_only": "描画のみスキップ",

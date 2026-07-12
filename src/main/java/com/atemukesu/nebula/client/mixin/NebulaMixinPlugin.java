@@ -61,7 +61,7 @@ public class NebulaMixinPlugin implements IMixinConfigPlugin {
         if (mixinClassName.endsWith("VideoRendererMixin")) {
             boolean replayModLoaded = FabricLoader.getInstance().isModLoaded("replaymod");
             if (replayModLoaded) {
-                Nebula.LOGGER.info("[Nebula/Mixin] ✓ Replay Mod detected. Applying mixin: {}", mixinClassName);
+                Nebula.LOGGER.info("[Nebula/Mixin] Replay Mod detected. Applying mixin: {}", mixinClassName);
             } else {
                 Nebula.LOGGER.debug("[Nebula/Mixin] Replay Mod not found. Skipping mixin: {}", mixinClassName);
             }
@@ -71,7 +71,7 @@ public class NebulaMixinPlugin implements IMixinConfigPlugin {
         if (mixinClassName.endsWith("MixinTransformPatcher")) {
             boolean irisLoaded = FabricLoader.getInstance().isModLoaded("iris");
             if (irisLoaded) {
-                Nebula.LOGGER.info("[Nebula/Mixin] ✓ Iris detected. Applying mixin: {}", mixinClassName);
+                Nebula.LOGGER.info("[Nebula/Mixin] Iris detected. Applying mixin: {}", mixinClassName);
             } else {
                 Nebula.LOGGER.debug("[Nebula/Mixin] Iris not found. Skipping mixin: {}", mixinClassName);
             }

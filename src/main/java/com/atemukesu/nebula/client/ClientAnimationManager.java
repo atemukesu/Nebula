@@ -219,10 +219,10 @@ public class ClientAnimationManager {
 
         // 记录日志
         if (bindFramebuffer && !hasLoggedStandardRenderPath) {
-            Nebula.LOGGER.info("[Nebula/Render] ✓ Rendering via Mixin (standard mode).");
+            Nebula.LOGGER.info("[Nebula/Render] Rendering via Mixin (standard mode).");
             hasLoggedStandardRenderPath = true;
         } else if (!bindFramebuffer && !hasLoggedIrisRenderPath) {
-            Nebula.LOGGER.info("[Nebula/Render] ✓ Rendering via Mixin (Iris mode).");
+            Nebula.LOGGER.info("[Nebula/Render] Rendering via Mixin (Iris mode).");
             hasLoggedIrisRenderPath = true;
         }
 
@@ -259,7 +259,7 @@ public class ClientAnimationManager {
         }
 
         // Global OIT Setup or Standard Batch Setup
-        boolean isOIT = config.getBlendMode() == BlendMode.OIT;
+        boolean isOIT = config.getEffectiveBlendMode() == BlendMode.OIT;
         boolean useExternalProgram = IrisUtil.isIrisRenderingActive();
         CullingBehavior behavior = config.getCullingBehavior();
         double now = CurrentTimeUtil.getCurrentAnimationTime();
@@ -436,7 +436,7 @@ public class ClientAnimationManager {
 
         // 记录标准渲染路径日志（只记录一次）
         if (!hasLoggedStandardRenderPath) {
-            Nebula.LOGGER.info("[Nebula/Render] ✓ Using standard render path (WorldRenderEvents.LAST).");
+            Nebula.LOGGER.info("[Nebula/Render] Using standard render path (WorldRenderEvents.LAST).");
             hasLoggedStandardRenderPath = true;
         }
 
@@ -483,7 +483,7 @@ public class ClientAnimationManager {
         }
 
         // Global OIT Setup or Standard Batch Setup
-        boolean isOIT = config.getBlendMode() == BlendMode.OIT;
+        boolean isOIT = config.getEffectiveBlendMode() == BlendMode.OIT;
         CullingBehavior behavior = config.getCullingBehavior();
         double now = CurrentTimeUtil.getCurrentAnimationTime();
         int targetFboId = -1;

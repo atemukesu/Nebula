@@ -13,8 +13,6 @@ public final class IrisShaderTransformer {
     private static final Pattern MAIN_PATTERN = Pattern.compile("void\\s+main\\s*\\(\\s*\\)\\s*\\{");
     private static final Pattern OUT0_PATTERN = Pattern.compile("layout\\s*\\(\\s*location\\s*=\\s*0\\s*\\)\\s*out\\s+vec4\\s+(\\w+)\\s*;");
     private static final Pattern OUT1_PATTERN = Pattern.compile("layout\\s*\\(\\s*location\\s*=\\s*1\\s*\\)\\s*out\\s+vec4\\s+(\\w+)\\s*;");
-    private static final String TEXTURE_SAMPLE_PATTERN =
-            "(?m)(?<lhs>\\b%s\\s*=\\s*)(?<sample>texture(?:2D)?\\s*\\([^;]+\\)(?:\\s*\\*\\s*[^;]+)?);";
 
     private IrisShaderTransformer() {
     }
@@ -68,10 +66,9 @@ public final class IrisShaderTransformer {
                     vec3 nebulaFinalViewPos = nebulaViewCenter.xyz + vec3(nebulaCorner, 0.0);
                     NebulaVDistance = length(nebulaViewCenter.xyz);
                     gl_Position = NebulaProjMat * vec4(nebulaFinalViewPos, 1.0);
-                    %s
                     return;
                 }
-            """.formatted(instanceId, buildCompatibilityVertexAssignments(transformed));
+            """.formatted(instanceId);
         return transformed.substring(0, bodyStart) + injectedMain + transformed.substring(bodyStart);
     }
 
@@ -96,10 +93,6 @@ public final class IrisShaderTransformer {
             return source;
         }
 
-        String withNebulaSample = replacePrimaryTextureSample(transformed, primaryOutput);
-        boolean usesOriginalPipeline = !withNebulaSample.equals(transformed);
-        transformed = withNebulaSample;
-
         Matcher mainMatcher = MAIN_PATTERN.matcher(transformed);
         if (!mainMatcher.find()) {
             return source;
@@ -108,113 +101,15 @@ public final class IrisShaderTransformer {
         String textureFunction = version >= 130 ? "texture" : "texture2DArray";
         String secondaryOutput = findSecondaryOutput(transformed);
         String secondaryOutputLine = secondaryOutput == null ? "" : secondaryOutput + " = vec4(nebulaAlpha);";
-        String injectedMain = usesOriginalPipeline
-                ? originalPipelineFragmentPrefix(textureFunction)
-                : fallbackFragmentPrefix(textureFunction, primaryOutput, secondaryOutputLine);
+        // Do not continue through the shaderpack's original particle body.  Its
+        // fog/material path consumes pack-specific vertex varyings (and may apply
+        // another alpha discard) which Nebula's instanced vertices intentionally
+        // do not provide.  That made the result depend on the far background,
+        // especially for low-alpha particles at the horizon.
+        String injectedMain = fallbackFragmentPrefix(textureFunction, primaryOutput, secondaryOutputLine);
 
         int bodyStart = mainMatcher.end();
         return transformed.substring(0, bodyStart) + injectedMain + transformed.substring(bodyStart);
-    }
-
-    private static String buildCompatibilityVertexAssignments(String source) {
-        StringBuilder assignments = new StringBuilder();
-        appendIfDeclared(assignments, source, "out vec2 uv", "uv = NebulaVUV;");
-        appendIfDeclared(assignments, source, "varying vec2 uv", "uv = NebulaVUV;");
-        appendIfDeclared(assignments, source, "out vec4 tint", "tint = NebulaVColor;");
-        appendIfDeclared(assignments, source, "varying vec4 tint", "tint = NebulaVColor;");
-        appendIfDeclared(assignments, source, "out vec2 light_levels", "light_levels = vec2(1.0);");
-        appendIfDeclared(assignments, source, "varying vec2 light_levels", "light_levels = vec2(1.0);");
-        appendIfDeclared(assignments, source, "out vec3 position_view", "position_view = nebulaFinalViewPos;");
-        appendIfDeclared(assignments, source, "varying vec3 position_view", "position_view = nebulaFinalViewPos;");
-        if (declares(source, "out vec3 position_scene") || declares(source, "varying vec3 position_scene")) {
-            if (source.contains("view_to_scene_space")) {
-                assignments.append("position_scene = view_to_scene_space(nebulaFinalViewPos);\n");
-            } else {
-                assignments.append("position_scene = nebulaFinalViewPos;\n");
-            }
-        }
-        if (declares(source, "flat out uint material_mask")) {
-            assignments.append("material_mask = 0u;\n");
-        } else if (declares(source, "flat out int material_mask") || declares(source, "out int material_mask")) {
-            assignments.append("material_mask = 0;\n");
-        }
-        appendIfDeclared(assignments, source, "flat out mat3 tbn",
-                "tbn = mat3(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0));");
-        if (source.contains("fog_params") && source.contains("get_fog_parameters") && source.contains("get_weather")) {
-            assignments.append("fog_params = get_fog_parameters(get_weather());\n");
-        }
-        return assignments.toString();
-    }
-
-    private static void appendIfDeclared(StringBuilder builder, String source, String declaration, String assignment) {
-        if (declares(source, declaration)) {
-            builder.append(assignment).append('\n');
-        }
-    }
-
-    private static boolean declares(String source, String declaration) {
-        return source.contains(declaration);
-    }
-
-    private static String replacePrimaryTextureSample(String source, String primaryOutput) {
-        Matcher mainMatcher = MAIN_PATTERN.matcher(source);
-        if (!mainMatcher.find()) {
-            return source;
-        }
-
-        String outputPattern = Pattern.quote(primaryOutput)
-                .replace("\\Qgl_FragData[0]\\E", "gl_FragData\\s*\\[\\s*0\\s*\\]");
-        Pattern pattern = Pattern.compile(TEXTURE_SAMPLE_PATTERN.formatted(outputPattern));
-        String beforeMainBody = source.substring(0, mainMatcher.end());
-        String mainBodyAndRest = source.substring(mainMatcher.end());
-        Matcher matcher = pattern.matcher(mainBodyAndRest);
-        if (!matcher.find()) {
-            return source;
-        }
-
-        String originalAssignment = matcher.group();
-        String replacement = """
-                if (NebulaIsActive == 1) {
-                    %s = nebulaBaseColor;
-                } else {
-                    %s
-                }""".formatted(primaryOutput, originalAssignment);
-        return beforeMainBody + matcher.replaceFirst(Matcher.quoteReplacement(replacement));
-    }
-
-    private static String originalPipelineFragmentPrefix(String textureFunction) {
-        return """
-
-                vec4 nebulaBaseColor = vec4(1.0);
-                if (NebulaIsActive == 1) {
-                    const float nebulaAlphaCutoff = 0.001;
-                    vec4 nebulaTexColor;
-                    if (NebulaUseTexture == 1) {
-                        nebulaTexColor = %s(NebulaSampler0, vec3(NebulaVUV, NebulaVTexLayer));
-                    } else {
-                        vec2 nebulaCenter = NebulaVUV - 0.5;
-                        float nebulaDist = length(nebulaCenter) * 2.0;
-                        float nebulaAlpha = 1.0 - smoothstep(0.5, 1.0, nebulaDist);
-                        float nebulaCoreBrightness = 1.0 + 0.5 * (1.0 - smoothstep(0.0, 0.3, nebulaDist));
-                        nebulaTexColor = vec4(vec3(nebulaCoreBrightness), nebulaAlpha);
-                    }
-                    nebulaBaseColor = nebulaTexColor * NebulaVColor;
-                    nebulaBaseColor.rgb *= NebulaVBloomFactor * NebulaEmissiveStrength;
-                    if (NebulaRenderPass == 0) {
-                        if (nebulaBaseColor.a < 0.5) {
-                            discard;
-                        }
-                    } else if (NebulaRenderPass == 1 || NebulaRenderPass == 3) {
-                        if (nebulaBaseColor.a < nebulaAlphaCutoff || nebulaBaseColor.a >= 0.5) {
-                            discard;
-                        }
-                    } else {
-                        if (nebulaBaseColor.a < nebulaAlphaCutoff) {
-                            discard;
-                        }
-                    }
-                }
-            """.formatted(textureFunction);
     }
 
     private static String fallbackFragmentPrefix(String textureFunction, String primaryOutput, String secondaryOutputLine) {
@@ -260,7 +155,9 @@ public final class IrisShaderTransformer {
                         %s
                     } else {
                         vec3 nebulaHdrColor = nebulaOutputColor * NebulaVBloomFactor * NebulaEmissiveStrength;
-                        %s = vec4(nebulaHdrColor, nebulaBaseColor.a);
+                        // Iris particle targets are composited with premultiplied
+                        // alpha, including their alpha channel.
+                        %s = vec4(nebulaHdrColor * nebulaBaseColor.a, nebulaBaseColor.a);
                     }
                     return;
                 }

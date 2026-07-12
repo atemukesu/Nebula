@@ -7,7 +7,6 @@
 		"ParticleManagerAccessor",
 		"VideoRendererMixin",
 		"NebulaWorldRendererMixin",
-		"NebulaParticleManagerMixin",
 		"MixinTransformPatcher"
 	],
 	"injectors": {

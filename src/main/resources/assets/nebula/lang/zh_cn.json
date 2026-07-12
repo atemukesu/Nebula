@@ -58,6 +58,8 @@
     "gui.nebula.config.blend_mode.additive": "加法混合",
     "gui.nebula.config.blend_mode.alpha": "标准混合",
     "gui.nebula.config.blend_mode.oit": "OIT (与顺序无关透明度)",
+    "gui.nebula.config.blend_mode.depth_priority": "深度优先（Iris）",
+    "gui.nebula.config.blend_mode.depth_priority.desc": "启用光影时，Alpha、加法混合和 OIT 均不可用。\n\nNebula 会先写入半透明粒子的深度，再绘制颜色，以避免粒子在地平线处被后续光影层覆盖。\n\n代价：近处半透明粒子会遮挡远处半透明粒子。",
     "gui.nebula.config.culling_behavior": "粒子剔除行为",
     "gui.nebula.config.culling_behavior.desc": "设置粒子在视野外的处理方式。\n\n§6仅跳过渲染（推荐）§r：保持逻辑计算，进入视野无延迟，但消耗CPU。\n\n§6完全暂停§r：完全停止处理。§c警告§r：进入视野时因数据寻址可能产生可感卡顿。",
     "gui.nebula.config.culling_behavior.simulate_only": "仅跳过渲染",

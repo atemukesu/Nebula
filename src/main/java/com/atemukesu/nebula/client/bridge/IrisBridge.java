@@ -40,6 +40,7 @@ package com.atemukesu.nebula.client.bridge;
 
 import com.atemukesu.nebula.Nebula;
 import com.mojang.blaze3d.systems.RenderSystem;
+import net.minecraft.client.MinecraftClient;
 import net.fabricmc.loader.api.FabricLoader;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL20;
@@ -68,6 +69,7 @@ public class IrisBridge {
     private Class<?> worldRenderingPhaseClass;
     private Object particlesPhase;
     private Object nonePhase;
+    private int particlePhaseRestoreFbo = -1;
 
     // Reflection handles (Util usage)
     private Class<?> irisInternalClass;
@@ -78,6 +80,7 @@ public class IrisBridge {
     private Method getShaderMapMethod;
     private Method getShaderMethod;
     private Object particleOpaqueShaderKey;
+    private Object particleTranslucentShaderKey;
     private Object activeParticleShader;
     private final Map<Class<?>, Method> shaderBindMethodCache = new ConcurrentHashMap<>();
     private final Map<Class<?>, Method> shaderUnbindMethodCache = new ConcurrentHashMap<>();
@@ -135,18 +138,26 @@ public class IrisBridge {
             irisApiInstance = getIrisApiMethod.invoke(null);
             isShaderPackInUseMethod = irisApiClass.getMethod("isShaderPackInUse");
 
-            Class<?> shaderAccessClass = Class.forName("net.irisshaders.iris.pipeline.programs.ShaderAccess");
-            getParticleTranslucentShaderMethod = shaderAccessClass.getMethod("getParticleTranslucentShader");
-
-            // ShaderAccess only exposes PARTICLES_TRANS.  Resolve PARTICLES through
-            // the public pipeline shader map so opaque and translucent particles do
-            // not get forced into the same Iris render target.
-            Class<?> shaderRenderingPipelineClass = Class.forName("net.irisshaders.iris.pipeline.ShaderRenderingPipeline");
-            Class<?> shaderKeyClass = Class.forName("net.irisshaders.iris.pipeline.programs.ShaderKey");
-            Class<?> shaderMapClass = Class.forName("net.irisshaders.iris.pipeline.programs.ShaderMap");
-            getShaderMapMethod = shaderRenderingPipelineClass.getMethod("getShaderMap");
-            getShaderMethod = shaderMapClass.getMethod("getShader", shaderKeyClass);
-            particleOpaqueShaderKey = shaderKeyClass.getField("PARTICLES").get(null);
+            // Iris changed ShaderAccess between releases.  Neither optional lookup
+            // is allowed to disable the complete bridge: the shader map is a
+            // compatible fallback for both PARTICLES and PARTICLES_TRANS.
+            try {
+                Class<?> shaderAccessClass = Class.forName("net.irisshaders.iris.pipeline.programs.ShaderAccess");
+                getParticleTranslucentShaderMethod = shaderAccessClass.getMethod("getParticleTranslucentShader");
+            } catch (ReflectiveOperationException ignored) {
+                Nebula.LOGGER.debug("[Nebula/IrisBridge] ShaderAccess particle lookup is unavailable; using ShaderMap.");
+            }
+            try {
+                Class<?> shaderRenderingPipelineClass = Class.forName("net.irisshaders.iris.pipeline.ShaderRenderingPipeline");
+                Class<?> shaderKeyClass = Class.forName("net.irisshaders.iris.pipeline.programs.ShaderKey");
+                Class<?> shaderMapClass = Class.forName("net.irisshaders.iris.pipeline.programs.ShaderMap");
+                getShaderMapMethod = shaderRenderingPipelineClass.getMethod("getShaderMap");
+                getShaderMethod = shaderMapClass.getMethod("getShader", shaderKeyClass);
+                particleOpaqueShaderKey = shaderKeyClass.getField("PARTICLES").get(null);
+                particleTranslucentShaderKey = shaderKeyClass.getField("PARTICLES_TRANS").get(null);
+            } catch (ReflectiveOperationException ignored) {
+                Nebula.LOGGER.debug("[Nebula/IrisBridge] ShaderMap particle lookup is unavailable.");
+            }
 
             // Common: Iris.getPipelineManager()
             irisInternalClass = Class.forName("net.irisshaders.iris.Iris");
@@ -226,21 +237,22 @@ public class IrisBridge {
             return 0;
         }
         initReflection();
-        if (getParticleTranslucentShaderMethod == null || getPipelineMethod == null) {
+        if (getPipelineMethod == null) {
             return 0;
         }
 
         try {
             Object shader;
-            if (translucent) {
+            if (translucent && getParticleTranslucentShaderMethod != null) {
                 shader = getParticleTranslucentShaderMethod.invoke(null);
             } else {
                 Object pipeline = getPipelineMethod.invoke(irisPipelineManager);
-                if (pipeline == null || getShaderMapMethod == null || getShaderMethod == null || particleOpaqueShaderKey == null) {
+                Object shaderKey = translucent ? particleTranslucentShaderKey : particleOpaqueShaderKey;
+                if (pipeline == null || getShaderMapMethod == null || getShaderMethod == null || shaderKey == null) {
                     return 0;
                 }
                 Object shaderMap = getShaderMapMethod.invoke(pipeline);
-                shader = getShaderMethod.invoke(shaderMap, particleOpaqueShaderKey);
+                shader = getShaderMethod.invoke(shaderMap, shaderKey);
             }
             if (shader == null) {
                 return 0;
@@ -277,6 +289,12 @@ public class IrisBridge {
     }
 
     public boolean beginParticlePhase() {
+        // ExtendedShader.bind() selects an Iris framebuffer.  Keep the caller's
+        // target so a late particle draw (for example just before weather) does
+        // not leave subsequent vanilla/Iris passes bound to the particle target.
+        if (particlePhaseRestoreFbo < 0) {
+            particlePhaseRestoreFbo = GL11.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING);
+        }
         boolean phaseSet = setWorldRenderingPhase(particlesPhase);
         boolean shaderBound = bindParticleTranslucentShader();
         if (phaseSet && shaderBound && !loggedParticlePhaseBinding) {
@@ -289,6 +307,16 @@ public class IrisBridge {
     public void endParticlePhase() {
         unbindParticleTranslucentShader();
         setWorldRenderingPhase(nonePhase);
+        int restoreFbo = particlePhaseRestoreFbo;
+        particlePhaseRestoreFbo = -1;
+        if (restoreFbo >= 0) {
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (client.getFramebuffer() != null && restoreFbo == client.getFramebuffer().fbo) {
+                client.getFramebuffer().beginWrite(false);
+            } else {
+                GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, restoreFbo);
+            }
+        }
     }
 
     private boolean setWorldRenderingPhase(Object phase) {

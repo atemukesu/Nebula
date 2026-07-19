@@ -241,10 +241,10 @@ public class ClientAnimationManager {
         mvMatrix.rotate(camera.getRotation().conjugate(new Quaternionf()));
         
         //? } else {
-        /*mvMatrix = new Matrix4f(modelViewMatrix);
-        mvMatrix.m30(0.0f);
-        mvMatrix.m31(0.0f);
-        mvMatrix.m32(0.0f);
+        /*Quaternionf q = camera.getRotation().conjugate(new Quaternionf());
+        q.rotateY((float) Math.PI);
+        mvMatrix = new Matrix4f();
+        mvMatrix.rotate(q);
         *///?}
 
         // [DEBUG] 打印构建的矩阵信息

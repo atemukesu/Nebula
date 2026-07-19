@@ -242,7 +242,8 @@ public class ClientAnimationManager {
         
         //? } else {
         /*Quaternionf q = camera.getRotation().conjugate(new Quaternionf());
-        q.rotateY((float) Math.PI);
+        Quaternionf flip = new Quaternionf(0.0f, 1.0f, 0.0f, 0.0f); // 绕 Y 轴 180°
+        q = flip.mul(q);
         mvMatrix = new Matrix4f();
         mvMatrix.rotate(q);
         *///?}

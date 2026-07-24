@@ -1,3 +1,12 @@
+**【本项目不再维护】**
+由于本人时间、精力、能力水平的限制，继续维护这个项目不仅难以及时修复问题，而且可能引入更多不确定性。现将此项目归档，您仍然可以 Fork 并自行修改，但将不能再提交 Issue 或 Pull Request，也不会收到任何更新。
+
+**【このプロジェクトはメンテナンス終了】**
+私の時間・労力・能力の限界により、このプロジェクトを継続してメンテナンスすることは、問題への迅速な対応が難しくなるだけでなく、新たな不確実性を招く恐れがあります。つきましては、本プロジェクトをアーカイブ（読み取り専用）とします。引き続き Fork してご自身で修正いただくことは可能ですが、Issue や Pull Request の受け付けは終了させていただきます。また、更新を受け取ることもできなくなります。
+
+**【This project is no longer maintained】**
+Due to limitations of my time, energy, and skill, continuing to maintain this project would not only make it difficult to address issues promptly, but may also introduce further uncertainty. This project has now been archived. You may still fork it and modify it yourself, but you will no longer be able to submit Issues or Pull Requests, nor will you receive any updates.
+
 ![Nebula Banner](/docs/assets/banner.png)
 
 # Nebula FX
